@@ -1,5 +1,10 @@
 import { SuwaveAssets } from '@/constants/suwave-theme';
 import { DriverWorkMode, VehicleBrandOption } from '@/stores/driver-flow-store';
+import type { DriverVehicle } from '@/services/driver-client';
+
+export function isVehicleApproved(vehicle?: DriverVehicle | { status?: string | null }) {
+  return vehicle?.status?.toUpperCase() === 'APROVADO';
+}
 
 /**
  * Equivalente nativo (parcial) das constantes/helpers de veiculo em

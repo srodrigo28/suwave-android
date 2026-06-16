@@ -1,6 +1,8 @@
 import * as LocalAuthentication from 'expo-local-authentication';
-import * as SecureStore from 'expo-secure-store';
 import { useCallback, useEffect, useState } from 'react';
+import { Platform } from 'react-native';
+
+import { deleteSecureItem, getSecureItem, setSecureItem } from '@/utils/secure-storage';
 
 const BIOMETRIC_ID_KEY = 'suwave-bio-identifier';
 const BIOMETRIC_PW_KEY = 'suwave-bio-password';
@@ -11,12 +13,13 @@ export function useBiometrics() {
   const [state, setState] = useState<BiometricState>('unavailable');
 
   useEffect(() => {
+    if (Platform.OS === 'web') return;
     async function check() {
       const [hasHardware, enrolled, storedId, storedPw] = await Promise.all([
         LocalAuthentication.hasHardwareAsync(),
         LocalAuthentication.isEnrolledAsync(),
-        SecureStore.getItemAsync(BIOMETRIC_ID_KEY),
-        SecureStore.getItemAsync(BIOMETRIC_PW_KEY),
+        getSecureItem(BIOMETRIC_ID_KEY),
+        getSecureItem(BIOMETRIC_PW_KEY),
       ]);
       if (!hasHardware || !enrolled) { setState('unavailable'); return; }
       if (!storedId || !storedPw) { setState('no_credentials'); return; }
@@ -26,10 +29,11 @@ export function useBiometrics() {
   }, []);
 
   const saveCredentials = useCallback(async (identifier: string, password: string) => {
+    if (Platform.OS === 'web') return;
     try {
       await Promise.all([
-        SecureStore.setItemAsync(BIOMETRIC_ID_KEY, identifier),
-        SecureStore.setItemAsync(BIOMETRIC_PW_KEY, password),
+        setSecureItem(BIOMETRIC_ID_KEY, identifier),
+        setSecureItem(BIOMETRIC_PW_KEY, password),
       ]);
       const [hasHardware, enrolled] = await Promise.all([
         LocalAuthentication.hasHardwareAsync(),
@@ -42,6 +46,7 @@ export function useBiometrics() {
   }, []);
 
   const authenticate = useCallback(async (): Promise<{ identifier: string; password: string } | null> => {
+    if (Platform.OS === 'web') return null;
     const result = await LocalAuthentication.authenticateAsync({
       promptMessage: 'Entre com biometria',
       cancelLabel: 'Cancelar',
@@ -49,17 +54,18 @@ export function useBiometrics() {
     });
     if (!result.success) return null;
     const [identifier, password] = await Promise.all([
-      SecureStore.getItemAsync(BIOMETRIC_ID_KEY),
-      SecureStore.getItemAsync(BIOMETRIC_PW_KEY),
+      getSecureItem(BIOMETRIC_ID_KEY),
+      getSecureItem(BIOMETRIC_PW_KEY),
     ]);
     if (!identifier || !password) return null;
     return { identifier, password };
   }, []);
 
   const clearCredentials = useCallback(async () => {
+    if (Platform.OS === 'web') return;
     await Promise.all([
-      SecureStore.deleteItemAsync(BIOMETRIC_ID_KEY),
-      SecureStore.deleteItemAsync(BIOMETRIC_PW_KEY),
+      deleteSecureItem(BIOMETRIC_ID_KEY),
+      deleteSecureItem(BIOMETRIC_PW_KEY),
     ]);
     setState('no_credentials');
   }, []);

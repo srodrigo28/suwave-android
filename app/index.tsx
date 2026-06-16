@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useEffect, useRef } from 'react';
-import { Animated, Image, StyleSheet } from 'react-native';
+import { Animated, Image, Platform, StyleSheet } from 'react-native';
 
 import { SuwaveAssets } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
@@ -21,7 +21,7 @@ export default function SplashScreen() {
       Animated.timing(opacity, {
         toValue: 0,
         duration: 360,
-        useNativeDriver: true,
+        useNativeDriver: Platform.OS !== 'web',
       }).start();
     }, 1950);
 

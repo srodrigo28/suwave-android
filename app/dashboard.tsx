@@ -1,8 +1,8 @@
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Location from 'expo-location';
-import { useEffect, useRef, useState } from 'react';
-import { AppState, AppStateStatus, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState, AppStateStatus, FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/motorista/action-button';
@@ -10,7 +10,7 @@ import { FormToast } from '@/components/motorista/form-toast';
 import { SkeletonBox } from '@/components/motorista/skeleton-box';
 import { SuwaveColors } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE } from '@/components/motorista/native-map';
 
 import {
   acceptDriverRideRequest,
@@ -26,6 +26,7 @@ import {
   setDriverOnline,
 } from '@/services/driver-client';
 import { useDriverFlowStore } from '@/stores/driver-flow-store';
+import { isVehicleApproved } from '@/utils/vehicles';
 
 /**
  * Equivalente nativo da tela `dashboard` (`Dashboard`) em
@@ -34,10 +35,6 @@ import { useDriverFlowStore } from '@/stores/driver-flow-store';
  * Simplificacoes mantidas: mapa e placeholder (sem react-native-maps);
  * localizacao real (expo-location/sendCurrentDriverLocation) e para Fase avancada.
  */
-
-function isVehicleApproved(vehicle?: DriverProfile['vehicles'][number]) {
-  return vehicle?.status?.toUpperCase() === 'APROVADO';
-}
 
 export default function DashboardScreen() {
   const { token, logout } = useAuth();
@@ -212,7 +209,7 @@ export default function DashboardScreen() {
     }
   }
 
-  async function handleRideAction(rideId: string, action: 'accept' | 'decline') {
+  const handleRideAction = useCallback(async (rideId: string, action: 'accept' | 'decline') => {
     if (!token) { setRideFeedback('Entre novamente para responder a corrida.'); return; }
     setBusyRideId(rideId);
     setRideFeedback('');
@@ -232,7 +229,7 @@ export default function DashboardScreen() {
     } finally {
       setBusyRideId(null);
     }
-  }
+  }, [token, setActiveRide]);
 
   return (
     <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
@@ -314,50 +311,63 @@ export default function DashboardScreen() {
           </View>
         ) : null}
 
-        {effectiveIsOnline && rideRequests.length > 0 ? (
-          <ScrollView style={styles.cardsScroll} showsVerticalScrollIndicator={false}>
-            {rideRequests.map((ride) => (
-              <Pressable key={ride.id} onPress={() => { setPendingRide(ride); router.push('/ride-available'); }} style={styles.rideCard}>
-                <Text style={styles.rideCardTag}>Nova corrida</Text>
-                <Text style={styles.rideCardOrigin}>{ride.origin_label ?? 'Origem'}</Text>
-                <Text style={styles.rideCardDestination}>{ride.destination_label ?? 'Destino'}</Text>
-                <View style={styles.rideCardMeta}>
-                  <Text style={styles.rideCardMetaItem}>{ride.requested_seats} lugar(es)</Text>
-                  {ride.distance_meters ? (
-                    <Text style={styles.rideCardMetaItem}>{(ride.distance_meters / 1000).toFixed(1)} km</Text>
-                  ) : null}
-                </View>
-                <View style={styles.rideCardActions}>
-                  <Pressable
-                    disabled={busyRideId === ride.id}
-                    onPress={() => handleRideAction(ride.id, 'decline')}
-                    style={styles.rideCardDecline}>
-                    <Text style={styles.rideCardDeclineText}>Recusar</Text>
+        {effectiveIsOnline && (rideRequests.length > 0 || deliveryOffers.length > 0) ? (
+          <FlatList
+            data={[
+              ...rideRequests.map((r) => ({ kind: 'ride' as const, item: r })),
+              ...deliveryOffers.slice(0, 2).map((d) => ({ kind: 'delivery' as const, item: d })),
+            ]}
+            keyExtractor={(entry) => entry.item.id}
+            showsVerticalScrollIndicator={false}
+            style={styles.cardsScroll}
+            renderItem={({ item: entry }) => {
+              if (entry.kind === 'ride') {
+                const ride = entry.item;
+                return (
+                  <Pressable onPress={() => { setPendingRide(ride); router.push('/ride-available'); }} style={styles.rideCard}>
+                    <Text style={styles.rideCardTag}>Nova corrida</Text>
+                    <Text style={styles.rideCardOrigin}>{ride.origin_label ?? 'Origem'}</Text>
+                    <Text style={styles.rideCardDestination}>{ride.destination_label ?? 'Destino'}</Text>
+                    <View style={styles.rideCardMeta}>
+                      <Text style={styles.rideCardMetaItem}>{ride.requested_seats} lugar(es)</Text>
+                      {ride.distance_meters ? (
+                        <Text style={styles.rideCardMetaItem}>{(ride.distance_meters / 1000).toFixed(1)} km</Text>
+                      ) : null}
+                    </View>
+                    <View style={styles.rideCardActions}>
+                      <Pressable
+                        disabled={busyRideId === ride.id}
+                        onPress={() => handleRideAction(ride.id, 'decline')}
+                        style={styles.rideCardDecline}>
+                        <Text style={styles.rideCardDeclineText}>Recusar</Text>
+                      </Pressable>
+                      <Pressable
+                        disabled={busyRideId === ride.id}
+                        onPress={() => handleRideAction(ride.id, 'accept')}
+                        style={styles.rideCardAccept}>
+                        <Text style={styles.rideCardAcceptText}>
+                          {busyRideId === ride.id ? 'Enviando...' : 'Aceitar'}
+                        </Text>
+                      </Pressable>
+                    </View>
                   </Pressable>
-                  <Pressable
-                    disabled={busyRideId === ride.id}
-                    onPress={() => handleRideAction(ride.id, 'accept')}
-                    style={styles.rideCardAccept}>
-                    <Text style={styles.rideCardAcceptText}>
-                      {busyRideId === ride.id ? 'Enviando...' : 'Aceitar'}
-                    </Text>
-                  </Pressable>
-                </View>
-              </Pressable>
-            ))}
-            {deliveryOffers.slice(0, 2).map((delivery) => (
-              <Pressable key={delivery.id} onPress={() => { setPendingDelivery(delivery); router.push('/delivery-available'); }} style={styles.rideCard}>
-                <Text style={styles.rideCardTag}>Nova entrega</Text>
-                <Text style={styles.rideCardOrigin}>{delivery.seller}</Text>
-                <Text style={styles.rideCardDestination}>{delivery.address}</Text>
-                <View style={styles.rideCardMeta}>
-                  <Text style={styles.rideCardMetaItem}>Pedido {delivery.short_id}</Text>
-                  <Text style={styles.rideCardMetaItem}>{delivery.items_count} iten(s)</Text>
-                  <Text style={styles.rideCardMetaItem}>{delivery.delivery_fee}</Text>
-                </View>
-              </Pressable>
-            ))}
-          </ScrollView>
+                );
+              }
+              const delivery = entry.item;
+              return (
+                <Pressable onPress={() => { setPendingDelivery(delivery); router.push('/delivery-available'); }} style={styles.rideCard}>
+                  <Text style={styles.rideCardTag}>Nova entrega</Text>
+                  <Text style={styles.rideCardOrigin}>{delivery.seller}</Text>
+                  <Text style={styles.rideCardDestination}>{delivery.address}</Text>
+                  <View style={styles.rideCardMeta}>
+                    <Text style={styles.rideCardMetaItem}>Pedido {delivery.short_id}</Text>
+                    <Text style={styles.rideCardMetaItem}>{delivery.items_count} iten(s)</Text>
+                    <Text style={styles.rideCardMetaItem}>{delivery.delivery_fee}</Text>
+                  </View>
+                </Pressable>
+              );
+            }}
+          />
         ) : null}
 
         {driverProfile === null ? (

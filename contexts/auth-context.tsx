@@ -1,5 +1,6 @@
-import * as SecureStore from 'expo-secure-store';
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react';
+
+import { deleteSecureItem, getSecureItem, setSecureItem } from '@/utils/secure-storage';
 
 import { DriverApiError, DriverProfile, getDriverProfile, loginDriverAccount, onDriverAuthExpired } from '@/services/driver-client';
 
@@ -48,7 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     async function restoreSession() {
-      const storedToken = await SecureStore.getItemAsync(TOKEN_STORAGE_KEY);
+      const storedToken = await getSecureItem(TOKEN_STORAGE_KEY);
       if (cancelled) return;
 
       if (!storedToken) {
@@ -62,7 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!cancelled) setDriver(profile);
       } catch {
         if (!cancelled) {
-          await SecureStore.deleteItemAsync(TOKEN_STORAGE_KEY);
+          await deleteSecureItem(TOKEN_STORAGE_KEY);
           setToken(null);
         }
       } finally {
@@ -77,7 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await SecureStore.deleteItemAsync(TOKEN_STORAGE_KEY);
+    await deleteSecureItem(TOKEN_STORAGE_KEY);
     setToken(null);
     setDriver(null);
     setSessionError('');
@@ -85,7 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     return onDriverAuthExpired(() => {
-      SecureStore.deleteItemAsync(TOKEN_STORAGE_KEY).catch(() => {});
+      deleteSecureItem(TOKEN_STORAGE_KEY).catch(() => {});
       setToken(null);
       setDriver(null);
       setSessionError('Sua sessão expirou. Entre novamente para continuar.');
@@ -93,7 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const authenticate = useCallback(async (accessToken: string) => {
-    await SecureStore.setItemAsync(TOKEN_STORAGE_KEY, accessToken);
+    await setSecureItem(TOKEN_STORAGE_KEY, accessToken);
     setSessionError('');
     setToken(accessToken);
     return refreshProfile(accessToken);

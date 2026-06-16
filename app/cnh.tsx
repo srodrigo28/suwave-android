@@ -123,8 +123,8 @@ export default function CnhScreen() {
             full_name: signupForm.full_name,
             gender: signupForm.gender,
             password: signupForm.password,
-            role_password: signupForm.password,
           });
+          session = await linkDriverRole(session.access_token);
         } catch (err) {
           if (!(err instanceof DriverApiError) || err.code !== 'email_already_exists') {
             throw err;
@@ -132,7 +132,7 @@ export default function CnhScreen() {
           // Fallback para caso de race condition: tenta login e link normal
           try {
             session = await loginDriverAccount({ email, password: signupForm.password });
-            await linkDriverRole(session.access_token);
+            session = await linkDriverRole(session.access_token);
           } catch (loginErr) {
             if (loginErr instanceof DriverApiError && loginErr.code === 'invalid_credentials') {
               throw new Error('Este e-mail já existe em outro app SUWAVE. Para juntar as contas, informe a senha dessa conta ou recupere a senha.');

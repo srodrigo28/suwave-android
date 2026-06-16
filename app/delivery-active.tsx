@@ -1,9 +1,12 @@
 import { Feather } from '@expo/vector-icons';
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
+import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import MapView, { Marker, PROVIDER_GOOGLE } from '@/components/motorista/native-map';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/motorista/action-button';
@@ -11,12 +14,14 @@ import { AppHeader } from '@/components/motorista/app-header';
 import { FormToast } from '@/components/motorista/form-toast';
 import { SuwaveColors, SuwaveSpacing } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
-import { completeDriverDelivery } from '@/services/driver-client';
+import { completeDriverDelivery, uploadDriverImage } from '@/services/driver-client';
 import { useDriverFlowStore } from '@/stores/driver-flow-store';
 
 /**
  * Equivalente nativo da tela `delivery-active` (`DeliveryActive`) em
  * app/motorista/src/app/page.tsx:1714-1768.
+ *
+ * G5 (16/06/2026): exige foto de comprovante antes de concluir.
  */
 export default function DeliveryActiveScreen() {
   const { token } = useAuth();
@@ -25,6 +30,8 @@ export default function DeliveryActiveScreen() {
   const [message, setMessage] = useState('');
   const [isBusy, setIsBusy] = useState(false);
   const [driverLocation, setDriverLocation] = useState<Location.LocationObject | null>(null);
+  const [proofUri, setProofUri] = useState<string | null>(null);
+  const [proofFileId, setProofFileId] = useState<string | null>(null);
 
   useEffect(() => {
     Location.requestForegroundPermissionsAsync().then(({ status }) => {
@@ -35,7 +42,48 @@ export default function DeliveryActiveScreen() {
     });
   }, []);
 
+  async function handleTakeProofPhoto() {
+    setMessage('');
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Câmera', 'Permita o acesso à câmera para fotografar o comprovante.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      quality: 0.85,
+    });
+    if (result.canceled || !result.assets[0]) return;
+
+    const compressed = await ImageManipulator.manipulateAsync(
+      result.assets[0].uri,
+      [{ resize: { width: 1200 } }],
+      { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG },
+    );
+
+    if (!token) return;
+    setIsBusy(true);
+    try {
+      const uploaded = await uploadDriverImage(token, {
+        uri: compressed.uri,
+        name: `comprovante-entrega-${Date.now()}.jpg`,
+        type: 'image/jpeg',
+        size: 0,
+      }, 'delivery_proof');
+      setProofUri(compressed.uri);
+      setProofFileId(String(uploaded.storage_file_id ?? ''));
+    } catch {
+      setMessage('Erro ao enviar a foto. Tente novamente.');
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function handleComplete() {
+    if (!proofUri) {
+      setMessage('Tire uma foto do comprovante de entrega antes de concluir.');
+      return;
+    }
     if (!token || !delivery) {
       router.push('/delivery-completed');
       return;
@@ -101,9 +149,31 @@ export default function DeliveryActiveScreen() {
           </View>
         </View>
 
+        <View style={styles.proofSection}>
+          <Text style={styles.proofTitle}>Foto de comprovante</Text>
+          <Text style={styles.proofSubtitle}>
+            Fotografe o pedido entregue na porta do cliente.
+          </Text>
+
+          {proofUri ? (
+            <View style={styles.proofPreviewWrapper}>
+              <Image contentFit="cover" source={{ uri: proofUri }} style={styles.proofPreview} />
+              <Pressable onPress={handleTakeProofPhoto} style={styles.retakeBtn}>
+                <Feather color="#fff" name="camera" size={14} />
+                <Text style={styles.retakeBtnText}>Refazer foto</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable disabled={isBusy} onPress={handleTakeProofPhoto} style={styles.proofCapture}>
+              <Feather color={SuwaveColors.muted} name="camera" size={28} />
+              <Text style={styles.proofCaptureText}>Tirar foto do comprovante</Text>
+            </Pressable>
+          )}
+        </View>
+
         <FormToast message={message} />
 
-        <ActionButton disabled={isBusy} loading={isBusy} onPress={handleComplete}>
+        <ActionButton disabled={isBusy || !proofFileId} loading={isBusy} onPress={handleComplete}>
           Concluir entrega
         </ActionButton>
         <ActionButton onPress={() => router.replace('/dashboard')} secondary>
@@ -124,12 +194,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingTop: SuwaveSpacing.screenVerticalTop,
     paddingBottom: SuwaveSpacing.screenVerticalBottom,
+    gap: 14,
   },
   map: {
     height: 140,
     borderRadius: 12,
     overflow: 'hidden',
-    marginBottom: 14,
   },
   successBox: {
     flexDirection: 'row',
@@ -165,7 +235,6 @@ const styles = StyleSheet.create({
     borderColor: '#e8edf1',
     borderRadius: 14,
     paddingHorizontal: 18,
-    marginVertical: 18,
   },
   checklistRow: {
     flexDirection: 'row',
@@ -191,5 +260,59 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#243949',
     lineHeight: 21,
+  },
+  proofSection: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: SuwaveColors.line,
+    padding: 18,
+    gap: 10,
+  },
+  proofTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: SuwaveColors.ink,
+  },
+  proofSubtitle: {
+    fontSize: 13,
+    color: SuwaveColors.muted,
+    lineHeight: 18,
+  },
+  proofCapture: {
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: SuwaveColors.line,
+    borderStyle: 'dashed',
+    paddingVertical: 28,
+    alignItems: 'center',
+    gap: 8,
+  },
+  proofCaptureText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: SuwaveColors.muted,
+  },
+  proofPreviewWrapper: {
+    gap: 8,
+  },
+  proofPreview: {
+    width: '100%',
+    height: 180,
+    borderRadius: 10,
+  },
+  retakeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: SuwaveColors.ink,
+    borderRadius: 8,
+    paddingVertical: 10,
+  },
+  retakeBtnText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
   },
 });

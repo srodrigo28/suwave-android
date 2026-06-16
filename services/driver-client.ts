@@ -155,7 +155,7 @@ function apiError(body: Record<string, unknown>) {
     return new DriverApiError('O servidor oscilou agora. Tente entrar novamente em instantes.', code, fields);
   }
 
-  if (message?.includes('semantic errors')) {
+  if (errorMessage?.includes('semantic errors') || message?.includes('semantic errors')) {
     return new DriverApiError('Alguns dados informados são inválidos. Revise o cadastro e tente novamente.', code, fields);
   }
 
@@ -189,7 +189,7 @@ export type UploadResult = {
   url: string;
 };
 
-type DriverUploadContext = 'driver_face' | 'driver_cnh' | 'driver_vehicle';
+type DriverUploadContext = 'driver_face' | 'driver_cnh' | 'driver_vehicle' | 'delivery_proof';
 
 function recordDriverUploadTrace(event: {
   action: string;
@@ -302,6 +302,13 @@ export type DriverRideRequest = {
   duration_seconds?: number | null;
   route_geometry?: DriverRouteCoordinate[] | null;
   driver_pickup_distance_meters?: number | null;
+  payment_method?: 'dinheiro' | 'pix' | null;
+  gross_fare?: number | null;
+  net_fare?: number | null;
+  platform_fee?: number | null;
+  platform_fee_percent?: number | null;
+  driver_pix_account?: string | null;
+  driver_pix_key_type?: string | null;
 };
 
 export type DriverPlannedTrip = {
@@ -452,7 +459,7 @@ export type DriverNotification = {
   user_id?: string;
 };
 
-function reportClientError(payload: { message: string; code?: string; path?: string; statusCode?: number; context?: Record<string, unknown> }) {
+export function reportClientError(payload: { message: string; code?: string; path?: string; statusCode?: number; context?: Record<string, unknown> }) {
   try {
     void fetch(`${apiBaseUrl}/monitor/errors`, {
       body: JSON.stringify({
@@ -466,7 +473,7 @@ function reportClientError(payload: { message: string; code?: string; path?: str
       headers: { 'Content-Type': 'application/json' },
       method: 'POST',
       signal: timeoutSignal(5000),
-    });
+    }).catch(() => undefined);
   } catch {
     // best-effort reporting only, never block the original flow
   }
@@ -988,6 +995,28 @@ export async function getDriverEarnings(token: string, params?: { start?: string
   });
 
   return parseResponse<DriverEarnings>(response);
+}
+
+export type DriverRideRating = {
+  id: string;
+  ride_request_id: string;
+  rating: number;
+  comment: string | null;
+  created_at: string;
+};
+
+export async function rateDriverRide(
+  token: string,
+  rideId: string,
+  rating: number,
+  comment?: string,
+): Promise<DriverRideRating> {
+  const response = await apiRequest(`/driver/ride-requests/${rideId}/driver-rating`, {
+    body: JSON.stringify({ rating, comment: comment ?? null }),
+    headers: authJsonHeaders(token),
+    method: 'POST',
+  });
+  return parseResponse<DriverRideRating>(response);
 }
 
 export async function listDriverNotifications(token: string) {

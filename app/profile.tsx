@@ -12,17 +12,14 @@ import { RadioGroupField } from '@/components/motorista/radio-group-field';
 import { SkeletonBox } from '@/components/motorista/skeleton-box';
 import { SuwaveColors, SuwaveSpacing } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
-import { DriverProfile, DriverVehicle, getDriverProfile, saveDriverFacePhoto, updateDriverProfile, uploadDriverImage } from '@/services/driver-client';
+import { DriverProfile, getDriverProfile, saveDriverFacePhoto, updateDriverProfile, uploadDriverImage } from '@/services/driver-client';
 import { maskCnpj, maskCpf, maskDate, maskPhone, onlyDigits } from '@/utils/masks';
+import { isVehicleApproved } from '@/utils/vehicles';
 
 /**
  * Equivalente nativo da tela `profile` (`DriverProfileScreen`) em
  * app/motorista/src/app/page.tsx:3440-3765.
  */
-
-function isVehicleApproved(vehicle?: DriverVehicle) {
-  return vehicle?.status?.toUpperCase() === 'APROVADO';
-}
 
 type ProfileForm = {
   birth_date: string;

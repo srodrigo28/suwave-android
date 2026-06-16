@@ -1,9 +1,9 @@
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Location from 'expo-location';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from '@/components/motorista/native-map';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/motorista/action-button';
@@ -30,6 +30,7 @@ export default function RideActiveScreen() {
   const eta = formatDriverEta(ride?.distance_meters);
   const fare = formatRideFare(ride?.distance_meters, ride?.vehicle_type);
   const [driverLocation, setDriverLocation] = useState<Location.LocationObject | null>(null);
+  const lastPingRef = useRef(0);
 
   const routeCoords = (ride?.route_geometry ?? []).map((pt) => ({ latitude: pt.lat, longitude: pt.lng }));
   const hasRoute = routeCoords.length > 0;
@@ -46,6 +47,9 @@ export default function RideActiveScreen() {
         (loc) => {
           if (cancelled) return;
           setDriverLocation(loc);
+          const now = Date.now();
+          if (now - lastPingRef.current < 15000) return;
+          lastPingRef.current = now;
           pingDriverLocation(token as string, {
             latitude: loc.coords.latitude,
             longitude: loc.coords.longitude,
@@ -60,15 +64,15 @@ export default function RideActiveScreen() {
 
   async function handleComplete() {
     if (!token || !ride) {
-      router.push('/ride-completed');
+      router.push('/ride-payment');
       return;
     }
     setIsBusy(true);
     setMessage('');
     try {
-      await completeDriverRideRequest(token, ride.id);
-      setActiveRide(null);
-      router.push('/ride-completed');
+      const completed = await completeDriverRideRequest(token, ride.id);
+      setActiveRide(completed);
+      router.push('/ride-payment');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Não foi possível concluir a corrida.');
     } finally {
