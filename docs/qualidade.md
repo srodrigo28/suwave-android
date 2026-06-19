@@ -249,6 +249,25 @@ Até o log ser fornecido, não alterar os arquivos dos itens 1–4 pois eles já
 
 ---
 
+### 8. `expo-location` watchPositionAsync crasha ao desmontar na web
+
+**Sintoma:** `TypeError: _LocationEventEmitter.LocationEventEmitter.removeSubscription is not a function` ao navegar para fora do dashboard. Crash acontece no desmonte do `useEffect` de localização.
+
+**Causa:** `Location.watchPositionAsync()` retorna uma `LocationSubscription` cujo `.remove()` chama `LocationEventEmitter.removeSubscription()` internamente. Essa API não existe no runtime web do Expo.
+
+**Fix aplicado em** `app/android/app/dashboard.tsx` — primeira linha de `startLocationTracking`:
+```typescript
+async function startLocationTracking() {
+  if (Platform.OS === 'web') return;  // guard obrigatório
+  const { status } = await Location.requestForegroundPermissionsAsync();
+  // ...
+}
+```
+
+**Regra:** qualquer função que use `Location.watchPositionAsync`, `Location.getCurrentPositionAsync` ou `Location.requestForegroundPermissionsAsync` DEVE ter `if (Platform.OS === 'web') return;` na primeira linha. Sem este guard, o app crasha ao desmontar o componente no emulador web.
+
+---
+
 ### 6. Neon DB SSL drops causam 500 na API (afeta login do app)
 
 **Sintoma:** App trava na tela de login; API retorna 500. Log do container mostra `OperationalError: consuming input failed: SSL connection has been closed unexpectedly`.

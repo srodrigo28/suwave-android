@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Location from 'expo-location';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, AppStateStatus, FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, AppStateStatus, FlatList, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/motorista/action-button';
@@ -157,6 +157,7 @@ export default function DashboardScreen() {
     let cancelled = false;
 
     async function startLocationTracking() {
+      if (Platform.OS === 'web') return;
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted' || cancelled) return;
 

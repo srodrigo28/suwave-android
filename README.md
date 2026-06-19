@@ -1,50 +1,52 @@
-# Welcome to your Expo app 👋
+# SUWAVE Android
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+App nativo do motorista SUWAVE.
 
-## Get started
+Atualizado em 19/06/2026.
 
-1. Install dependencies
+## Estado atual
 
-   ```bash
-   npm install
-   ```
+- Expo SDK 54 / React Native.
+- Fluxos amplos de login, cadastro, documentos, veiculo, dashboard, corridas, entregas, notificacoes, financeiro e perfil.
+- Funciona como frente nativa complementar ao `app/motorista`.
 
-2. Start the app
+## Comandos
 
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```powershell
+npm install
+npx expo start
+npx tsc --noEmit
+npx eslint . --ext .ts,.tsx
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## Documentacao importante
 
-## Learn more
+- `docs/index.md`
+- `docs/qualidade.md`
+- `..\..\docs\MAPA-COMMIT-PUSH-QUALIDADE-MODULOS.md`
 
-To learn more about developing your project with Expo, look at the following resources:
+## Commit e push
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+Situacao atual:
 
-## Join the community
+- o repositorio local existe
+- no momento desta leitura nao ha `origin` configurado
 
-Join our community of developers creating universal apps.
+Fluxo recomendado apos centralizar no GitHub:
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+```powershell
+git status --short --branch
+npx tsc --noEmit
+npx eslint . --ext .ts,.tsx
+git add <arquivos-do-android>
+git commit -m "feat(android): descricao"
+git push origin main
+```
+
+## Regra importante
+
+Antes de qualquer push do Android:
+
+- confirmar qual sera o repositorio oficial no GitHub
+- configurar `origin`
+- validar o fluxo com tipagem e lint
