@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/motorista/action-button';
@@ -14,7 +14,6 @@ import { SelectField } from '@/components/motorista/select-field';
 import { SuwaveColors, SuwaveSpacing } from '@/constants/suwave-theme';
 import { checkDriverAccountAvailability, DriverApiError } from '@/services/driver-client';
 import { useDriverFlowStore } from '@/stores/driver-flow-store';
-import { Feather } from '@expo/vector-icons';
 import { maskCnpj, maskCpf, maskDate, maskPhone, maskedDateToIso, onlyDigits } from '@/utils/masks';
 
 const primarySteps = ['1', '2', '3', '4', '5'];
@@ -49,7 +48,6 @@ export default function SignupScreen() {
   const [error, setError] = useState('');
   const [isChecking, setIsChecking] = useState(false);
   const [showLoginHint, setShowLoginHint] = useState(false);
-  const [linkingBanner, setLinkingBanner] = useState(false);
 
   function updateField(field: keyof typeof signupForm, value: string | boolean) {
     if (showLoginHint) setShowLoginHint(false);
@@ -104,7 +102,6 @@ export default function SignupScreen() {
     }
 
     setError('');
-    setLinkingBanner(false);
     setShowLoginHint(false);
     setIsChecking(true);
     try {
@@ -121,7 +118,6 @@ export default function SignupScreen() {
         }
         // É comprador, ainda não é motorista — vincular com nova senha de motorista
         setIsLinkingExistingAccount(true);
-        setLinkingBanner(true);
         setSignupStep(2);
         return;
       }
@@ -316,15 +312,6 @@ export default function SignupScreen() {
           </>
         )}
 
-        {linkingBanner ? (
-          <View style={styles.linkingBanner}>
-            <Feather color="#b37800" name="info" size={15} />
-            <Text style={styles.linkingBannerText}>
-              Este e-mail já tem conta SUWAVE. Você está criando uma senha exclusiva para o app Motorista — sua conta de comprador não será alterada.
-            </Text>
-          </View>
-        ) : null}
-
         <FormToast message={error} />
 
         {showLoginHint ? (
@@ -381,21 +368,5 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
     color: SuwaveColors.black,
-  },
-  linkingBanner: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    backgroundColor: '#fffbe6',
-    borderWidth: 1,
-    borderColor: '#ffe58f',
-    borderRadius: 10,
-    padding: 12,
-  },
-  linkingBannerText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#7c5800',
-    lineHeight: 18,
   },
 });
