@@ -64,6 +64,7 @@ export default function ForgotPasswordScreen() {
 
         <Field
           editable={!hasWhatsapp}
+          icon="mail"
           keyboardType="email-address"
           onChangeText={setEmail}
           placeholder="E-mail"
@@ -71,6 +72,7 @@ export default function ForgotPasswordScreen() {
         />
         <Field
           editable={!hasEmail}
+          icon="whatsapp"
           keyboardType="phone-pad"
           onChangeText={(value) => setWhatsapp(maskPhone(value))}
           placeholder="WhatsApp"

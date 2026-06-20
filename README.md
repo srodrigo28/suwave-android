@@ -2,7 +2,9 @@
 
 App nativo do motorista SUWAVE.
 
-Atualizado em 19/06/2026.
+Atualizado em 20/06/2026.
+
+> **▶ Frente "espelho do app/motorista":** o documento-mestre é `../../clone-app-motorista-20-junho.md` (raiz do projeto), seção **"🔄 HANDOFF DE SESSÃO"** — estado atual, pendências e o comando para a IA continuar. Mapa detalhado: `../docs/motorista-android.md`.
 
 ## Estado atual
 

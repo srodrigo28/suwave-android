@@ -4,11 +4,20 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ActionButton } from '@/components/motorista/action-button';
 import { FormToast } from '@/components/motorista/form-toast';
 import { SkeletonBox } from '@/components/motorista/skeleton-box';
 import { SuwaveColors, SuwaveSpacing } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
-import { DriverHistoryItem, listDriverHistory } from '@/services/driver-client';
+import {
+  cancelDriverTrip,
+  completeDriverDelivery,
+  completeDriverRideRequest,
+  completeDriverTrip,
+  DriverHistoryItem,
+  listDriverHistory,
+  pickupDriverDelivery,
+} from '@/services/driver-client';
 import { HISTORY_FILTERS, HistoryFilter } from '@/utils/finance';
 
 /**
@@ -22,12 +31,13 @@ export default function TripHistoryScreen() {
   const [error, setError] = useState('');
   const [activeFilter, setActiveFilter] = useState<HistoryFilter>('all');
   const [selectedItem, setSelectedItem] = useState<DriverHistoryItem | null>(null);
+  const [busyItemId, setBusyItemId] = useState<string | null>(null);
 
   const loadHistory = useCallback(() => {
-    if (!token) return;
+    if (!token) return Promise.resolve();
     setIsLoading(true);
     setError('');
-    listDriverHistory(token)
+    return listDriverHistory(token)
       .then(setItems)
       .catch((err) => setError(err instanceof Error ? err.message : 'Não foi possível carregar o histórico.'))
       .finally(() => setIsLoading(false));
@@ -36,6 +46,36 @@ export default function TripHistoryScreen() {
   useEffect(() => {
     loadHistory();
   }, [loadHistory]);
+
+  // Espelho de handleHistoryAction em app/motorista/src/app/page.tsx:4847.
+  async function handleHistoryAction(item: DriverHistoryItem, action: 'complete' | 'cancel' | 'pickup') {
+    if (!token) {
+      setError('Entre novamente para atualizar o histórico.');
+      return;
+    }
+
+    setBusyItemId(item.id);
+    setError('');
+    try {
+      if (item.type === 'ride') {
+        await completeDriverRideRequest(token, item.id);
+      } else if (item.type === 'delivery' && action === 'pickup') {
+        await pickupDriverDelivery(token, item.id);
+      } else if (item.type === 'delivery') {
+        await completeDriverDelivery(token, item.id);
+      } else if (action === 'complete') {
+        await completeDriverTrip(token, item.id);
+      } else {
+        await cancelDriverTrip(token, item.id);
+      }
+      await loadHistory();
+      setSelectedItem(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível atualizar este item.');
+    } finally {
+      setBusyItemId(null);
+    }
+  }
 
   const filteredItems = useMemo(() => {
     const sorted = [...items];
@@ -139,12 +179,27 @@ export default function TripHistoryScreen() {
         ) : null}
       </ScrollView>
 
-      <TripReceiptModal item={selectedItem} onClose={() => setSelectedItem(null)} />
+      <TripReceiptModal
+        busyItemId={busyItemId}
+        item={selectedItem}
+        onAction={handleHistoryAction}
+        onClose={() => setSelectedItem(null)}
+      />
     </SafeAreaView>
   );
 }
 
-function TripReceiptModal({ item, onClose }: { item: DriverHistoryItem | null; onClose: () => void }) {
+function TripReceiptModal({
+  busyItemId,
+  item,
+  onAction,
+  onClose,
+}: {
+  busyItemId: string | null;
+  item: DriverHistoryItem | null;
+  onAction: (item: DriverHistoryItem, action: 'complete' | 'cancel' | 'pickup') => void;
+  onClose: () => void;
+}) {
   if (!item) return null;
 
   const tone = item.status_tone;
@@ -206,6 +261,29 @@ function TripReceiptModal({ item, onClose }: { item: DriverHistoryItem | null; o
                   <Text style={styles.receiptMetricValue}>{m.value}</Text>
                 </View>
               ))}
+            </View>
+          ) : null}
+
+          {/* Ações para itens pendentes (status_tone "scheduled") — espelho de page.tsx:5003. */}
+          {tone === 'scheduled' ? (
+            <View style={styles.receiptActions}>
+              <ActionButton
+                disabled={busyItemId === item.id}
+                loading={busyItemId === item.id}
+                onPress={() =>
+                  onAction(item, item.type === 'delivery' && item.status === 'preparing' ? 'pickup' : 'complete')
+                }>
+                {busyItemId === item.id
+                  ? 'Atualizando...'
+                  : item.type === 'delivery' && item.status === 'preparing'
+                    ? 'Retirar pedido'
+                    : 'Concluir'}
+              </ActionButton>
+              {item.type === 'planned_trip' ? (
+                <ActionButton disabled={busyItemId === item.id} onPress={() => onAction(item, 'cancel')} secondary>
+                  Cancelar
+                </ActionButton>
+              ) : null}
             </View>
           ) : null}
         </Pressable>
@@ -564,5 +642,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '900',
     color: '#071a36',
+  },
+  receiptActions: {
+    gap: 10,
+    marginTop: 16,
   },
 });

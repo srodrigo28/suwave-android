@@ -85,9 +85,9 @@ export default function ResetPasswordScreen() {
 
         <Text style={styles.copy}>Crie uma nova senha para sua conta</Text>
 
-        <Field onChangeText={setPassword} placeholder="Nova senha" secure value={password} />
+        <Field icon="lock" onChangeText={setPassword} placeholder="Nova senha" secure value={password} />
         <PasswordStrengthBar password={password} />
-        <Field onChangeText={setConfirm} placeholder="Confirmar senha" secure value={confirm} />
+        <Field icon="lock" onChangeText={setConfirm} placeholder="Confirmar senha" secure value={confirm} />
 
         <FormToast message={message} />
 

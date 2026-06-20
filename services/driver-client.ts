@@ -1010,12 +1010,17 @@ export async function rateDriverRide(
   rideId: string,
   rating: number,
   comment?: string,
-): Promise<DriverRideRating> {
+): Promise<DriverRideRating | null> {
   const response = await apiRequest(`/driver/ride-requests/${rideId}/driver-rating`, {
     body: JSON.stringify({ rating, comment: comment ?? null }),
     headers: authJsonHeaders(token),
     method: 'POST',
   });
+  // Espelha app/motorista (page.tsx RidePassengerReview): 409 = passageiro já
+  // avaliado, tratado como sucesso (sem corpo garantido).
+  if (response.status === 409) {
+    return null;
+  }
   return parseResponse<DriverRideRating>(response);
 }
 
@@ -1053,6 +1058,33 @@ export async function cancelDriverTrip(token: string, tripId: string) {
   });
 
   return parseResponse<DriverPlannedTrip>(response);
+}
+
+// Chat da corrida — espelho de app/motorista/src/services/driver-client.ts
+// (getRideMessages / sendRideMessage / RideChatMessage).
+export type RideChatMessage = {
+  id: string;
+  ride_request_id: string;
+  sender_role: 'passenger' | 'driver';
+  body: string;
+  sent_at: string;
+};
+
+export async function getRideMessages(token: string, rideId: string, since?: string) {
+  const qs = since ? `?since=${encodeURIComponent(since)}` : '';
+  const response = await apiRequest(`/driver/ride-requests/${rideId}/messages${qs}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return parseResponse<RideChatMessage[]>(response);
+}
+
+export async function sendRideMessage(token: string, rideId: string, body: string) {
+  const response = await apiRequest(`/driver/ride-requests/${rideId}/messages`, {
+    body: JSON.stringify({ body }),
+    headers: authJsonHeaders(token),
+    method: 'POST',
+  });
+  return parseResponse<RideChatMessage>(response);
 }
 
 function authJsonHeaders(token: string) {

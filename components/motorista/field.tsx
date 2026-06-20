@@ -1,4 +1,4 @@
-import { Feather } from '@expo/vector-icons';
+import { Feather, FontAwesome } from '@expo/vector-icons';
 import { useState } from 'react';
 import { KeyboardTypeOptions, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
@@ -8,6 +8,8 @@ type FieldProps = {
   value: string;
   onChangeText: (value: string) => void;
   placeholder: string;
+  /** Icone a esquerda — espelha a prop `icon` do `Field` web (mail/lock/whatsapp). */
+  icon?: string;
   secure?: boolean;
   keyboardType?: KeyboardTypeOptions;
   maxLength?: number;
@@ -15,13 +17,24 @@ type FieldProps = {
 };
 
 /**
- * Equivalente nativo de `.field` / `Field` em app/motorista/src/app/page.tsx
- * (variante usada em login/recuperacao de senha, sem icone a esquerda).
+ * Equivalente nativo de `.field` / `Field` em app/motorista/src/app/page.tsx.
+ * O `Field` web sempre renderiza um icone a esquerda (`.field-icon`, cor --ink);
+ * passe `icon` para reproduzir isso em login/recuperacao de senha.
  */
+function FieldIcon({ name, editable }: { name: string; editable: boolean }) {
+  const color = editable ? SuwaveColors.ink : '#9a9a9a';
+  if (name === 'whatsapp') {
+    // Feather nao tem whatsapp; usa FontAwesome para o mesmo glifo da web.
+    return <FontAwesome color={color} name="whatsapp" size={20} />;
+  }
+  return <Feather color={color} name={name as keyof typeof Feather.glyphMap} size={20} />;
+}
+
 export function Field({
   value,
   onChangeText,
   placeholder,
+  icon,
   secure = false,
   keyboardType,
   maxLength,
@@ -30,7 +43,12 @@ export function Field({
   const [isVisible, setIsVisible] = useState(false);
 
   return (
-    <View style={[styles.field, !editable && styles.fieldDisabled]}>
+    <View style={[styles.field, icon ? styles.fieldWithIcon : null, !editable && styles.fieldDisabled]}>
+      {icon ? (
+        <View style={styles.icon}>
+          <FieldIcon editable={editable} name={icon} />
+        </View>
+      ) : null}
       <TextInput
         editable={editable}
         keyboardType={keyboardType}
@@ -68,6 +86,16 @@ const styles = StyleSheet.create({
     paddingLeft: 22,
     marginTop: 14,
     gap: 10,
+  },
+  fieldWithIcon: {
+    // Com icone, alinha o padding ao LabeledField (icone + gap a esquerda).
+    paddingLeft: 14,
+    gap: 12,
+  },
+  icon: {
+    width: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   fieldDisabled: {
     backgroundColor: '#f4f4f4',

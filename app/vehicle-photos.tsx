@@ -15,10 +15,14 @@ import { VehiclePhotoSlotKey, getWorkModeUi, vehicleSteps } from '@/utils/vehicl
 
 /**
  * Equivalente nativo da tela `vehicle-photos` (`VehiclePhotos`) em
- * app/motorista/src/app/page.tsx:6800-6961.
+ * app/motorista/src/app/page.tsx:6891-7052.
  *
- * TODO: ligar `uploadDriverImage` (driver-client) - hoje as fotos ficam
- * apenas no estado local (`vehicleUploads`), sem upload real.
+ * Diferença de design vs. web: o motorista faz `uploadDriverImage` na hora
+ * em que cada foto é escolhida. Aqui a foto é guardada como `DriverImageAsset`
+ * local em `vehicleUploads` e o upload real (`uploadDriverImage`, contexto
+ * `driver_vehicle`) acontece em lote no `vehicle-review.tsx` (`handleTrackStatus`)
+ * antes do `saveDriverVehicle`/`updateDriverVehicle` — mesmo padrão de upload
+ * diferido usado em `cnh.tsx`. O status "Foto enviada" reflete a seleção local.
  */
 export default function VehiclePhotosScreen() {
   const editingVehicleId = useDriverFlowStore((state) => state.editingVehicleId);

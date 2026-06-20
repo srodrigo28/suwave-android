@@ -15,7 +15,6 @@ Atualizado em 16/06/2026. App nativo Android para motoristas SUWAVE (Expo SDK 54
 | Zustand | 5.0.14 (AsyncStorage) |
 | React Native Maps | Google Maps |
 | Expo Notifications | push via Expo |
-| Expo Local Authentication | biometria |
 | expo-image | imagens otimizadas |
 | expo-secure-store | JWT token |
 
@@ -27,7 +26,6 @@ Android mínimo: API 24 (Android 7.0). Target: API 36.
 
 ### Autenticação
 - [x] Login com e-mail/senha
-- [x] Login com biometria (expo-local-authentication)
 - [x] Cadastro em 4 passos (dados, documentos, veículo, revisão)
 - [x] Vinculação de conta comprador → motorista
 - [x] Token JWT no SecureStore com refresh automático
@@ -141,7 +139,9 @@ Android mínimo: API 24 (Android 7.0). Target: API 36.
 | `acceptDriverRideRequest` | POST /driver/ride-requests/{id}/accept | `DriverRideRequest` |
 | `declineDriverRideRequest` | POST /driver/ride-requests/{id}/decline | `DriverRideRequest` |
 | `completeDriverRideRequest` | POST /driver/ride-requests/{id}/complete | `DriverRideRequest` |
-| `rateDriverRide` | POST /driver/ride-requests/{id}/driver-rating | `DriverRideRating` |
+| `rateDriverRide` | POST /driver/ride-requests/{id}/driver-rating | `DriverRideRating \| null` (409 = já avaliado → `null`) |
+| `getRideMessages` | GET /driver/ride-requests/{id}/messages?since= | `RideChatMessage[]` |
+| `sendRideMessage` | POST /driver/ride-requests/{id}/messages | `RideChatMessage` |
 
 #### Entregas
 | Função | Rota | Retorno |
@@ -299,7 +299,6 @@ Apenas `activeRide` e `activeDelivery` são persistidos entre sessões.
 | Hook | Responsabilidade |
 |---|---|
 | `usePushNotifications()` | Solicita permissão, obtém token Expo, salva via POST /driver/push-token, roteia notificações recebidas |
-| `useBiometrics()` | Verifica disponibilidade e autentica via biometria nativa |
 | `useColorScheme()` | Dark/light mode (reservado para futura implementação de tema) |
 
 ---
@@ -320,7 +319,7 @@ app/android/
 ├── app/                    # Rotas Expo Router (35 telas)
 │   ├── _layout.tsx         # Root layout — AuthContext + PushNotifications
 │   ├── index.tsx           # Splash / redirect guard
-│   ├── login.tsx           # Login (email/senha + biometria)
+│   ├── login.tsx           # Login (email/senha)
 │   ├── signup.tsx          # Cadastro multistep
 │   ├── dashboard.tsx       # Painel principal — FlatList de corridas/entregas
 │   ├── ride-available.tsx  # Corrida pendente de aceite
@@ -335,7 +334,7 @@ app/android/
 │   └── ...                 # profile, settings, notifications, terms, face, cnh
 ├── components/motorista/   # 17 componentes UI específicos
 ├── contexts/               # auth-context.tsx
-├── hooks/                  # push-notifications, biometrics, color-scheme
+├── hooks/                  # push-notifications, color-scheme
 ├── services/               # driver-client.ts, maps-client.ts
 ├── stores/                 # driver-flow-store.ts
 ├── constants/              # suwave-theme.ts (design system)
@@ -361,7 +360,6 @@ index.tsx
         ├── token presente → dashboard.tsx
         └── sem token      → login.tsx
                                 ├── email/senha → loginDriverAccount()
-                                ├── biometria  → useBiometrics()
                                 └── sucesso    → dashboard.tsx
 ```
 

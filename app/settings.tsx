@@ -2,16 +2,15 @@ import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import Constants from 'expo-constants';
 import { useState } from 'react';
-import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppHeader } from '@/components/motorista/app-header';
 import { SuwaveColors, SuwaveSpacing } from '@/constants/suwave-theme';
-import { useBiometrics } from '@/hooks/use-biometrics';
 
 const APP_VERSION = Constants.expoConfig?.version ?? '1.0.0';
 
-const FAQ_ITEMS: Array<{ q: string; a: string }> = [
+const FAQ_ITEMS: { q: string; a: string }[] = [
   {
     q: 'Como apareço nos resultados de busca?',
     a: 'O SUWAVE distribui corridas e entregas de acordo com sua localização, tipo de veículo e disponibilidade. Mantenha-se online para receber solicitações próximas.',
@@ -28,30 +27,10 @@ const FAQ_ITEMS: Array<{ q: string; a: string }> = [
     q: 'O que fazer se tiver um problema na corrida?',
     a: 'Entre em contato com o suporte via WhatsApp ou e-mail logo abaixo. Nossa equipe atende em horário comercial de seg–sáb.',
   },
-  {
-    q: 'Minha biometria não funciona. O que fazer?',
-    a: 'Faça login normalmente com e-mail e senha. A biometria será reativada automaticamente após o próximo login bem-sucedido. Se o problema persistir, desative e reative nas configurações.',
-  },
 ];
 
 export default function SettingsScreen() {
-  const biometrics = useBiometrics();
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
-
-  function handleDisableBiometrics() {
-    Alert.alert(
-      'Desativar biometria',
-      'Isso removerá o acesso rápido. Você precisará digitar sua senha no próximo login.',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Desativar',
-          style: 'destructive',
-          onPress: () => biometrics.clearCredentials(),
-        },
-      ],
-    );
-  }
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -59,23 +38,6 @@ export default function SettingsScreen() {
         <AppHeader onBack={() => router.replace('/dashboard')} />
 
         <Text style={styles.title}>Configurações</Text>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Segurança</Text>
-          {biometrics.state === 'ready' ? (
-            <SettingsRow
-              icon="lock"
-              label="Desativar biometria"
-              onPress={handleDisableBiometrics}
-            />
-          ) : (
-            <View style={styles.infoRow}>
-              <Feather color={SuwaveColors.muted} name="lock" size={18} />
-              <Text style={styles.infoLabel}>Biometria</Text>
-              <Text style={styles.infoValue}>{biometrics.state === 'unavailable' ? 'Não disponível' : 'Não configurada'}</Text>
-            </View>
-          )}
-        </View>
 
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Suporte</Text>

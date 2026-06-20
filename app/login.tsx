@@ -1,16 +1,14 @@
-import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/motorista/action-button';
 import { Field } from '@/components/motorista/field';
 import { FormToast } from '@/components/motorista/form-toast';
 import { SuwaveWordmark } from '@/components/motorista/suwave-wordmark';
-import { SuwaveAssets, SuwaveColors, SuwaveSpacing, SuwaveTypography } from '@/constants/suwave-theme';
+import { SuwaveColors, SuwaveSpacing, SuwaveTypography, SuwaveAssets } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
-import { useBiometrics } from '@/hooks/use-biometrics';
 import { checkDriverAccountAvailability, DriverApiError } from '@/services/driver-client';
 
 /**
@@ -25,7 +23,6 @@ import { checkDriverAccountAvailability, DriverApiError } from '@/services/drive
  */
 export default function LoginScreen() {
   const { login, sessionError, clearSessionError } = useAuth();
-  const biometrics = useBiometrics();
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -62,7 +59,6 @@ export default function LoginScreen() {
     setIsSubmitting(true);
     try {
       const driver = await login({ identifier, password });
-      await biometrics.saveCredentials(identifier, password);
       setSuccess(`Bem-vindo, ${driver?.full_name ?? ''}.`);
       setTimeout(() => router.replace('/dashboard'), 650);
     } catch (err) {
@@ -76,23 +72,6 @@ export default function LoginScreen() {
     }
   }
 
-  async function handleBiometricLogin() {
-    setError('');
-    setSuccess('');
-    const creds = await biometrics.authenticate();
-    if (!creds) return;
-    setIsSubmitting(true);
-    try {
-      const driver = await login(creds);
-      setSuccess(`Bem-vindo, ${driver?.full_name ?? ''}.`);
-      setTimeout(() => router.replace('/dashboard'), 650);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Não foi possível entrar com biometria.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
@@ -100,8 +79,8 @@ export default function LoginScreen() {
 
         <Image resizeMode="contain" source={SuwaveAssets.loginHero} style={styles.heroImage} />
 
-        <Field onChangeText={setIdentifier} placeholder="E-mail ou WhatsApp" value={identifier} />
-        <Field onChangeText={setPassword} placeholder="Senha" secure value={password} />
+        <Field icon="mail" onChangeText={setIdentifier} placeholder="E-mail ou WhatsApp" value={identifier} />
+        <Field icon="lock" onChangeText={setPassword} placeholder="Senha" secure value={password} />
 
         <Pressable onPress={() => router.push('/forgot-password')} style={styles.linkButton}>
           <Text style={styles.linkText}>Esqueci minha senha</Text>
@@ -112,15 +91,6 @@ export default function LoginScreen() {
         <ActionButton loading={isSubmitting} onPress={handleLogin}>
           {isSubmitting ? 'Entrando...' : 'Entrar'}
         </ActionButton>
-
-        {biometrics.state === 'ready' ? (
-          <Pressable accessibilityLabel="Entrar com biometria" disabled={isSubmitting} onPress={handleBiometricLogin} style={styles.biometricButton}>
-            <View style={styles.biometricIcon}>
-              <Feather color={SuwaveColors.ink} name="lock" size={22} />
-            </View>
-            <Text style={styles.biometricText}>Entrar com biometria</Text>
-          </Pressable>
-        ) : null}
 
         <ActionButton iconDirection="none" onPress={() => router.push('/signup')} secondary>
           Cadastrar como motorista
@@ -156,29 +126,5 @@ const styles = StyleSheet.create({
     fontSize: SuwaveTypography.linkFontSize,
     fontWeight: '600',
     textDecorationLine: 'underline',
-  },
-  biometricButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    height: 52,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: SuwaveColors.line,
-    backgroundColor: '#fff',
-  },
-  biometricIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: SuwaveColors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  biometricText: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: SuwaveColors.ink,
   },
 });
