@@ -1,6 +1,6 @@
 # app/android — Documentação Técnica
 
-Atualizado em 16/06/2026. App nativo Android para motoristas SUWAVE (Expo SDK 54, React Native 0.81.5, New Architecture).
+Atualizado em 20/06/2026. App nativo Android para motoristas SUWAVE (Expo SDK 54, React Native 0.81.5, New Architecture). Sem biometria (removida em 20/06); espelho do app/motorista — ver `clone-app-motorista-20-junho.md`.
 
 ---
 
