@@ -23,8 +23,10 @@ export const RideStatus = {
   PROCURANDO: 'PROCURANDO',
   SEM_MOTORISTA: 'SEM_MOTORISTA',
   ACEITA: 'ACEITA',
+  EM_ANDAMENTO: 'EM_ANDAMENTO',
   RECUSADA: 'RECUSADA',
   CONCLUIDA: 'CONCLUIDA',
+  BLOQUEADA: 'BLOQUEADA',
 } as const;
 export type RideStatus = (typeof RideStatus)[keyof typeof RideStatus];
 

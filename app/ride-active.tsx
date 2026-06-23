@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Location from 'expo-location';
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from '@/components/motorista/native-map';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -10,22 +10,25 @@ import { ActionButton } from '@/components/motorista/action-button';
 import { FormToast } from '@/components/motorista/form-toast';
 import { SuwaveColors } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
-import { completeDriverRideRequest, pingDriverLocation } from '@/services/driver-client';
+import {
+  completeDriverRideRequest,
+  confirmDriverDeliveryCode,
+  pingDriverLocation,
+  startDriverRideRequest,
+} from '@/services/driver-client';
 import { useDriverFlowStore } from '@/stores/driver-flow-store';
 import { formatDriverEta, formatRideFare } from '@/utils/rides';
 
-/**
- * Equivalente nativo da tela `ride-active` (`RideActive`) em
- * app/motorista/src/app/page.tsx:1442-1512.
- *
- * Mapa (`map-art`/`react-native-maps`) permanece como placeholder.
- */
 export default function RideActiveScreen() {
   const { token } = useAuth();
   const ride = useDriverFlowStore((state) => state.activeRide);
   const setActiveRide = useDriverFlowStore((state) => state.setActiveRide);
   const [message, setMessage] = useState('');
   const [isBusy, setIsBusy] = useState(false);
+  const [deliveryCode, setDeliveryCode] = useState('');
+
+  const isDelivery = ride?.request_kind === 'delivery';
+  const isInProgress = ride?.status === 'EM_ANDAMENTO';
 
   const eta = formatDriverEta(ride?.distance_meters);
   const fare = formatRideFare(ride?.distance_meters, ride?.vehicle_type);
@@ -62,6 +65,22 @@ export default function RideActiveScreen() {
     return () => { cancelled = true; sub?.remove(); };
   }, [token]);
 
+  /* Fase A → B: motorista chegou ao embarque e inicia a viagem */
+  async function handleStart() {
+    if (!token || !ride) return;
+    setIsBusy(true);
+    setMessage('');
+    try {
+      const updated = await startDriverRideRequest(token, ride.id);
+      setActiveRide(updated);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Não foi possível iniciar a corrida.');
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  /* Fase B corrida: concluir e ir para pagamento */
   async function handleComplete() {
     if (!token || !ride) {
       router.push('/ride-payment');
@@ -80,6 +99,37 @@ export default function RideActiveScreen() {
     }
   }
 
+  /* Fase B entrega: confirmar com código do destinatário */
+  async function handleConfirmDelivery() {
+    if (!token || !ride) return;
+    const code = deliveryCode.trim();
+    if (code.length !== 4) {
+      setMessage('Digite o código de 4 dígitos fornecido pelo destinatário.');
+      return;
+    }
+    setIsBusy(true);
+    setMessage('');
+    try {
+      await confirmDriverDeliveryCode(token, ride.id, code);
+      // após confirmar, concluir para obter dados de pagamento
+      const completed = await completeDriverRideRequest(token, ride.id);
+      setActiveRide(completed);
+      router.push('/ride-payment');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Código inválido ou corrida não pode ser confirmada.');
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  const phaseLabel = isInProgress
+    ? (isDelivery ? 'Entregando pacote' : 'Em viagem')
+    : (isDelivery ? 'Indo buscar o pacote' : 'Indo ao passageiro');
+
+  const phaseDetail = isInProgress
+    ? (isDelivery ? (ride?.destination_label ?? 'Endereço de entrega') : (ride?.destination_label ?? 'Destino'))
+    : (ride?.origin_label ?? (isDelivery ? 'Ponto de coleta' : 'Ponto de embarque'));
+
   return (
     <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
       <MapView
@@ -91,23 +141,15 @@ export default function RideActiveScreen() {
             ? {
                 latitude: driverLocation.coords.latitude,
                 longitude: driverLocation.coords.longitude,
-                latitudeDelta: 0.01,
-                longitudeDelta: 0.01,
+                latitudeDelta: 0.012,
+                longitudeDelta: 0.012,
               }
-            : {
-                latitude: -15.7942,
-                longitude: -47.8822,
-                latitudeDelta: 0.05,
-                longitudeDelta: 0.05,
-              }
+            : { latitude: -15.7942, longitude: -47.8822, latitudeDelta: 0.05, longitudeDelta: 0.05 }
         }
       >
         {driverLocation ? (
           <Marker
-            coordinate={{
-              latitude: driverLocation.coords.latitude,
-              longitude: driverLocation.coords.longitude,
-            }}
+            coordinate={{ latitude: driverLocation.coords.latitude, longitude: driverLocation.coords.longitude }}
             title="Sua posição"
           />
         ) : null}
@@ -116,14 +158,22 @@ export default function RideActiveScreen() {
         ) : null}
       </MapView>
 
-      <View style={styles.bottomSheet}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.bottomSheet}>
         <View style={styles.handleRow}>
           <View style={styles.handle} />
         </View>
 
+        {/* Fase indicator */}
+        <View style={[styles.phaseTag, isInProgress ? styles.phaseTagActive : styles.phaseTagWaiting]}>
+          <Feather color={isInProgress ? '#15803d' : '#b45309'} name={isInProgress ? 'navigation' : 'clock'} size={12} />
+          <Text style={[styles.phaseTagText, isInProgress ? styles.phaseTagTextActive : styles.phaseTagTextWaiting]}>
+            {isInProgress ? 'EM VIAGEM' : 'A CAMINHO DO EMBARQUE'}
+          </Text>
+        </View>
+
         <View style={styles.locationCopy}>
-          <Text style={styles.locationLabel}>Indo ao passageiro</Text>
-          <Text style={styles.locationValue}>{ride?.origin_label ?? 'Ponto de embarque'}</Text>
+          <Text style={styles.locationLabel}>{phaseLabel}</Text>
+          <Text style={styles.locationValue} numberOfLines={2}>{phaseDetail}</Text>
         </View>
 
         {eta ? (
@@ -131,7 +181,9 @@ export default function RideActiveScreen() {
             <Feather color="#0a6b4f" name="navigation" size={18} />
             <View>
               <Text style={styles.etaValue}>{eta}</Text>
-              <Text style={styles.etaLabel}>até o embarque · {ride?.origin_label ?? 'origem'}</Text>
+              <Text style={styles.etaLabel}>
+                {isInProgress ? 'até o destino' : 'até o embarque'} · {isInProgress ? (ride?.destination_label ?? '') : (ride?.origin_label ?? '')}
+              </Text>
             </View>
           </View>
         ) : null}
@@ -139,14 +191,16 @@ export default function RideActiveScreen() {
         <View style={styles.checklist}>
           <View style={styles.checklistRow}>
             <View style={styles.checklistIcon}>
-              <Feather color="#fff" name="user" size={11} />
+              <Feather color="#fff" name={isDelivery ? 'package' : 'user'} size={11} />
             </View>
-            <Text style={styles.checklistLabel}>{ride?.passenger_name ?? 'Passageiro SUWAVE'}</Text>
+            <Text style={styles.checklistLabel}>
+              {isDelivery ? `Envio: ${ride?.origin_label ?? 'Coleta'}` : (ride?.passenger_name ?? 'Passageiro SUWAVE')}
+            </Text>
           </View>
           {ride?.destination_label ? (
             <View style={[styles.checklistRow, styles.checklistRowBorder]}>
               <View style={styles.checklistIcon}>
-                <Feather color="#fff" name="navigation" size={11} />
+                <Feather color="#fff" name="map-pin" size={11} />
               </View>
               <Text style={styles.checklistLabel}>Destino: {ride.destination_label}</Text>
             </View>
@@ -161,27 +215,63 @@ export default function RideActiveScreen() {
           ) : null}
         </View>
 
+        {/* Input de código de entrega — só em Fase B para deliveries */}
+        {isInProgress && isDelivery ? (
+          <View style={styles.codeSection}>
+            <Text style={styles.codeLabel}>Código de confirmação (destinatário)</Text>
+            <TextInput
+              keyboardType="number-pad"
+              maxLength={4}
+              onChangeText={setDeliveryCode}
+              placeholder="0000"
+              placeholderTextColor="#9ca3af"
+              style={styles.codeInput}
+              value={deliveryCode}
+            />
+          </View>
+        ) : null}
+
         <FormToast message={message} />
 
-        <ActionButton disabled={isBusy} loading={isBusy} onPress={handleComplete}>
-          Concluir corrida
-        </ActionButton>
-        <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
-          Voltar ao dashboard
-        </ActionButton>
-      </View>
+        {/* Fase A: botão iniciar */}
+        {!isInProgress ? (
+          <>
+            <ActionButton disabled={isBusy} loading={isBusy} onPress={handleStart}>
+              {`Cheguei — Iniciar ${isDelivery ? 'entrega' : 'corrida'}`}
+            </ActionButton>
+            <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
+              Voltar ao dashboard
+            </ActionButton>
+          </>
+        ) : isDelivery ? (
+          /* Fase B entrega: confirmar código */
+          <>
+            <ActionButton disabled={isBusy || deliveryCode.trim().length !== 4} loading={isBusy} onPress={handleConfirmDelivery}>
+              Confirmar entrega
+            </ActionButton>
+            <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
+              Voltar ao dashboard
+            </ActionButton>
+          </>
+        ) : (
+          /* Fase B corrida: concluir */
+          <>
+            <ActionButton disabled={isBusy} loading={isBusy} onPress={handleComplete}>
+              Concluir corrida
+            </ActionButton>
+            <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
+              Voltar ao dashboard
+            </ActionButton>
+          </>
+        )}
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#edf4f4',
-  },
-  map: {
-    flex: 1,
-  },
+  safeArea: { flex: 1, backgroundColor: '#edf4f4' },
+  map: { flex: 1 },
   bottomSheet: {
     backgroundColor: '#fff',
     borderTopLeftRadius: 28,
@@ -190,31 +280,26 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 20,
   },
-  handleRow: {
+  handleRow: { alignItems: 'center', marginBottom: 12 },
+  handle: { width: 56, height: 6, borderRadius: 999, backgroundColor: '#d8e0e5' },
+  phaseTag: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    gap: 6,
+    alignSelf: 'flex-start',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    marginBottom: 10,
   },
-  handle: {
-    width: 56,
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: '#d8e0e5',
-  },
-  locationCopy: {
-    gap: 4,
-    marginBottom: 12,
-  },
-  locationLabel: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#607381',
-    textTransform: 'uppercase',
-  },
-  locationValue: {
-    fontSize: 20,
-    fontWeight: '900',
-    color: SuwaveColors.ink,
-  },
+  phaseTagWaiting: { backgroundColor: '#fef3c7' },
+  phaseTagActive: { backgroundColor: '#dcfce7' },
+  phaseTagText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.5 },
+  phaseTagTextWaiting: { color: '#b45309' },
+  phaseTagTextActive: { color: '#15803d' },
+  locationCopy: { gap: 3, marginBottom: 10 },
+  locationLabel: { fontSize: 11, fontWeight: '800', color: '#607381', textTransform: 'uppercase' },
+  locationValue: { fontSize: 18, fontWeight: '900', color: SuwaveColors.ink },
   etaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -223,49 +308,38 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    marginBottom: 12,
+    marginBottom: 10,
   },
-  etaValue: {
-    fontSize: 18,
-    fontWeight: '900',
-    color: '#0a6b4f',
-  },
-  etaLabel: {
-    fontSize: 13,
-    fontWeight: '400',
-    color: '#607381',
-  },
+  etaValue: { fontSize: 17, fontWeight: '900', color: '#0a6b4f' },
+  etaLabel: { fontSize: 12, fontWeight: '400', color: '#607381' },
   checklist: {
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#e8edf1',
     borderRadius: 14,
     paddingHorizontal: 18,
-    marginBottom: 12,
+    marginBottom: 10,
   },
-  checklistRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 14,
-  },
-  checklistRowBorder: {
-    borderTopWidth: 1,
-    borderTopColor: SuwaveColors.line,
-  },
+  checklistRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12 },
+  checklistRowBorder: { borderTopWidth: 1, borderTopColor: SuwaveColors.line },
   checklistIcon: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: '#ffc61a',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 18, height: 18, borderRadius: 9,
+    backgroundColor: '#ffc61a', alignItems: 'center', justifyContent: 'center',
   },
-  checklistLabel: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#243949',
-    lineHeight: 21,
+  checklistLabel: { flex: 1, fontSize: 14, fontWeight: '600', color: '#243949', lineHeight: 20 },
+  codeSection: { marginBottom: 10, gap: 6 },
+  codeLabel: { fontSize: 12, fontWeight: '700', color: '#607381' },
+  codeInput: {
+    borderWidth: 2,
+    borderColor: '#ffc61a',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 24,
+    fontWeight: '900',
+    color: SuwaveColors.ink,
+    textAlign: 'center',
+    letterSpacing: 10,
+    backgroundColor: '#fffbeb',
   },
 });

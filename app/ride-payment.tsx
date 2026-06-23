@@ -41,7 +41,6 @@ function crc16(str: string): string {
 
 export default function RidePaymentScreen() {
   const ride = useDriverFlowStore((state) => state.activeRide);
-  const setActiveRide = useDriverFlowStore((state) => state.setActiveRide);
   const [copied, setCopied] = useState(false);
 
   const paymentMethod = ride?.payment_method ?? 'dinheiro';
@@ -70,8 +69,7 @@ export default function RidePaymentScreen() {
   }
 
   function handleFinish() {
-    setActiveRide(null);
-    router.replace('/ride-completed');
+    router.replace('/ride-driver-rating');
   }
 
   const grossFmtd = formatCurrency(grossFare);

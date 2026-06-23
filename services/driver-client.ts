@@ -284,6 +284,7 @@ export type DriverRouteCoordinate = {
 
 export type DriverRideRequest = {
   accepted_at?: string | null;
+  started_at?: string | null;
   declined_at?: string | null;
   destination_label?: string | null;
   distance_meters?: number | null;
@@ -297,6 +298,7 @@ export type DriverRideRequest = {
   passenger_phone?: string | null;
   requested_at: string;
   requested_seats: number;
+  request_kind?: 'ride' | 'delivery' | null;
   status: RideStatus;
   vehicle_type?: 'bike' | 'car' | 'moto' | null;
   duration_seconds?: number | null;
@@ -309,6 +311,7 @@ export type DriverRideRequest = {
   platform_fee_percent?: number | null;
   driver_pix_account?: string | null;
   driver_pix_key_type?: string | null;
+  delivery_confirmation_code?: string | null;
 };
 
 export type DriverPlannedTrip = {
@@ -924,6 +927,15 @@ export async function declineDriverRideRequest(token: string, rideRequestId: str
   return parseResponse<DriverRideRequest>(response);
 }
 
+export async function startDriverRideRequest(token: string, rideRequestId: string) {
+  const response = await apiRequest(`/driver/ride-requests/${rideRequestId}/start`, {
+    headers: { Authorization: `Bearer ${token}` },
+    method: 'POST',
+  });
+
+  return parseResponse<DriverRideRequest>(response);
+}
+
 export async function completeDriverRideRequest(token: string, rideRequestId: string) {
   const response = await apiRequest(`/driver/ride-requests/${rideRequestId}/complete`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -931,6 +943,31 @@ export async function completeDriverRideRequest(token: string, rideRequestId: st
   });
 
   return parseResponse<DriverRideRequest>(response);
+}
+
+export async function confirmDriverDeliveryCode(token: string, rideRequestId: string, code: string) {
+  const response = await apiRequest(`/driver/ride-requests/${rideRequestId}/confirm-delivery`, {
+    body: JSON.stringify({ code }),
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    method: 'POST',
+  });
+
+  return parseResponse<{ status: string; message?: string }>(response);
+}
+
+export async function rateDriverPassenger(
+  token: string,
+  rideRequestId: string,
+  rating: number,
+  comment?: string,
+) {
+  const response = await apiRequest(`/driver/ride-requests/${rideRequestId}/driver-rating`, {
+    body: JSON.stringify({ rating, comment: comment ?? null }),
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    method: 'POST',
+  });
+
+  return parseResponse<{ id: string }>(response);
 }
 
 export async function listAvailableDriverDeliveries(token: string) {
