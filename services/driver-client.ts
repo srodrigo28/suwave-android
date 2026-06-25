@@ -945,6 +945,23 @@ export async function completeDriverRideRequest(token: string, rideRequestId: st
   return parseResponse<DriverRideRequest>(response);
 }
 
+export async function cancelDriverRideRequest(token: string, rideRequestId: string) {
+  const response = await apiRequest(`/driver/ride-requests/${rideRequestId}/cancel`, {
+    body: JSON.stringify({
+      cancel_scope: 'driver_active_ride',
+      details: '',
+      keep_online: false,
+      reason: 'driver_cancelled',
+      refund_destination: 'wallet',
+      refund_to_wallet: true,
+    }),
+    headers: authJsonHeaders(token),
+    method: 'POST',
+  });
+
+  return parseResponse<DriverRideRequest>(response);
+}
+
 export async function confirmDriverDeliveryCode(token: string, rideRequestId: string, code: string) {
   const response = await apiRequest(`/driver/ride-requests/${rideRequestId}/confirm-delivery`, {
     body: JSON.stringify({ code }),

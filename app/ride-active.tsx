@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Location from 'expo-location';
 import { useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from '@/components/motorista/native-map';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -11,6 +11,7 @@ import { FormToast } from '@/components/motorista/form-toast';
 import { SuwaveColors } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
 import {
+  cancelDriverRideRequest,
   completeDriverRideRequest,
   confirmDriverDeliveryCode,
   pingDriverLocation,
@@ -120,6 +121,42 @@ export default function RideActiveScreen() {
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function cancelActiveRide() {
+    if (!token || !ride) {
+      setActiveRide(null);
+      router.replace('/dashboard');
+      return;
+    }
+    setIsBusy(true);
+    setMessage('');
+    try {
+      await cancelDriverRideRequest(token, ride.id);
+      setActiveRide(null);
+      router.replace('/dashboard');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : `Não foi possível cancelar ${isDelivery ? 'o envio' : 'a corrida'}.`);
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  function handleCancel() {
+    Alert.alert(
+      isDelivery ? 'Cancelar envio?' : 'Cancelar corrida?',
+      isDelivery
+        ? 'O envio será cancelado, o cliente será reembolsado quando houver valor reservado e você ficará offline.'
+        : 'A corrida será cancelada, o passageiro será reembolsado quando houver valor reservado e você ficará offline.',
+      [
+        { text: 'Voltar', style: 'cancel' },
+        {
+          text: isDelivery ? 'Cancelar envio' : 'Cancelar corrida',
+          style: 'destructive',
+          onPress: () => void cancelActiveRide(),
+        },
+      ],
+    );
   }
 
   const phaseLabel = isInProgress
@@ -239,6 +276,9 @@ export default function RideActiveScreen() {
             <ActionButton disabled={isBusy} loading={isBusy} onPress={handleStart}>
               {`Cheguei — Iniciar ${isDelivery ? 'entrega' : 'corrida'}`}
             </ActionButton>
+            <ActionButton disabled={isBusy} iconDirection="none" onPress={handleCancel} secondary>
+              {isDelivery ? 'Cancelar envio' : 'Cancelar corrida'}
+            </ActionButton>
             <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
               Voltar ao dashboard
             </ActionButton>
@@ -249,6 +289,9 @@ export default function RideActiveScreen() {
             <ActionButton disabled={isBusy || deliveryCode.trim().length !== 4} loading={isBusy} onPress={handleConfirmDelivery}>
               Confirmar entrega
             </ActionButton>
+            <ActionButton disabled={isBusy} iconDirection="none" onPress={handleCancel} secondary>
+              Cancelar envio
+            </ActionButton>
             <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
               Voltar ao dashboard
             </ActionButton>
@@ -258,6 +301,9 @@ export default function RideActiveScreen() {
           <>
             <ActionButton disabled={isBusy} loading={isBusy} onPress={handleComplete}>
               Concluir corrida
+            </ActionButton>
+            <ActionButton disabled={isBusy} iconDirection="none" onPress={handleCancel} secondary>
+              Cancelar corrida
             </ActionButton>
             <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
               Voltar ao dashboard
