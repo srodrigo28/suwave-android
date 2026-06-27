@@ -284,6 +284,8 @@ export type DriverRouteCoordinate = {
 
 export type DriverRideRequest = {
   accepted_at?: string | null;
+  arrived_pickup_at?: string | null;
+  arrived_destination_at?: string | null;
   started_at?: string | null;
   declined_at?: string | null;
   destination_label?: string | null;
@@ -294,6 +296,8 @@ export type DriverRideRequest = {
   origin_label?: string | null;
   origin_latitude?: number | null;
   origin_longitude?: number | null;
+  destination_latitude?: number | null;
+  destination_longitude?: number | null;
   passenger_name?: string | null;
   passenger_phone?: string | null;
   requested_at: string;
@@ -414,7 +418,7 @@ export type DriverHistoryItem = {
   date_label: string;
   distance_label: string;
   id: string;
-  metrics: Array<{ label: string; value: string }>;
+  metrics: { label: string; value: string }[];
   sort_at: string;
   status: string;
   status_label: string;
@@ -943,6 +947,36 @@ export async function completeDriverRideRequest(token: string, rideRequestId: st
   });
 
   return parseResponse<DriverRideRequest>(response);
+}
+
+export async function arrivedDriverPickup(token: string, rideRequestId: string) {
+  const response = await apiRequest(`/driver/ride-requests/${rideRequestId}/arrived-pickup`, {
+    headers: { Authorization: `Bearer ${token}` },
+    method: 'POST',
+  });
+
+  return parseResponse<DriverRideRequest>(response);
+}
+
+export async function arrivedDriverDestination(token: string, rideRequestId: string) {
+  const response = await apiRequest(`/driver/ride-requests/${rideRequestId}/arrived-destination`, {
+    headers: { Authorization: `Bearer ${token}` },
+    method: 'POST',
+  });
+
+  return parseResponse<DriverRideRequest>(response);
+}
+
+export async function trackDriverRideRequest(rideRequestId: string) {
+  const response = await apiRequest(`/driver/ride-requests/${rideRequestId}/track`, {
+    method: 'GET',
+  });
+
+  return parseResponse<{
+    status: RideStatus;
+    arrived_pickup_at?: string | null;
+    arrived_destination_at?: string | null;
+  }>(response);
 }
 
 export async function cancelDriverRideRequest(token: string, rideRequestId: string) {

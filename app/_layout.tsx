@@ -141,6 +141,7 @@ export default function RootLayout() {
         <Stack.Screen name="trip-history" options={modal} />
         <Stack.Screen name="reviews" options={modal} />
         <Stack.Screen name="register-trip" options={slide} />
+        <Stack.Screen name="dev-map-demo" />
         <Stack.Screen name="ride-available" options={modal} />
         <Stack.Screen name="ride-active" />
         <Stack.Screen name="ride-declined" options={slide} />

@@ -266,7 +266,7 @@ function TripDetailModal({ trip, onClose }: { trip: DriverEarningsHistory | null
     ? trip.route_geometry!.map((pt) => ({ latitude: pt.lat, longitude: pt.lng }))
     : [];
 
-  const detailRows: Array<[string, string | null | undefined]> = [
+  const detailRows: [string, string | null | undefined][] = [
     ['Valor', trip.amount],
     ['Distância', trip.distance_label],
     ['Duração', trip.duration_label],

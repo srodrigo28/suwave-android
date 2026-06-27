@@ -1,10 +1,10 @@
 import { Feather, FontAwesome } from '@expo/vector-icons';
-import { useState } from 'react';
-import { KeyboardTypeOptions, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { Ref, useState } from 'react';
+import { KeyboardTypeOptions, Pressable, StyleSheet, TextInput, TextInputProps, View } from 'react-native';
 
 import { SuwaveColors, SuwaveRadii, SuwaveTypography } from '@/constants/suwave-theme';
 
-type FieldProps = {
+type FieldProps = Omit<TextInputProps, 'onChangeText' | 'placeholder' | 'secureTextEntry' | 'style' | 'value'> & {
   value: string;
   onChangeText: (value: string) => void;
   placeholder: string;
@@ -14,6 +14,7 @@ type FieldProps = {
   keyboardType?: KeyboardTypeOptions;
   maxLength?: number;
   editable?: boolean;
+  inputRef?: Ref<TextInput>;
 };
 
 /**
@@ -39,6 +40,8 @@ export function Field({
   keyboardType,
   maxLength,
   editable = true,
+  inputRef,
+  ...inputProps
 }: FieldProps) {
   const [isVisible, setIsVisible] = useState(false);
 
@@ -56,9 +59,11 @@ export function Field({
         onChangeText={onChangeText}
         placeholder={placeholder}
         placeholderTextColor={SuwaveColors.placeholder}
+        ref={inputRef}
         secureTextEntry={secure && !isVisible}
         style={styles.input}
         value={value}
+        {...inputProps}
       />
       {secure ? (
         <Pressable

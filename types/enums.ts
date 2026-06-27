@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-redeclare */
 /**
  * Equivalente nativo de app/motorista/src/types/enums.ts.
  */

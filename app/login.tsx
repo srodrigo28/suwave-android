@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/motorista/action-button';
@@ -23,6 +23,7 @@ import { checkDriverAccountAvailability, DriverApiError } from '@/services/drive
  */
 export default function LoginScreen() {
   const { login, sessionError, clearSessionError } = useAuth();
+  const passwordRef = useRef<TextInput>(null);
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -74,13 +75,44 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <SuwaveWordmark subtitle="MOTORISTA" />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.flex}
+      >
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <SuwaveWordmark subtitle="MOTORISTA" />
 
         <Image resizeMode="contain" source={SuwaveAssets.loginHero} style={styles.heroImage} />
 
-        <Field icon="mail" onChangeText={setIdentifier} placeholder="E-mail ou WhatsApp" value={identifier} />
-        <Field icon="lock" onChangeText={setPassword} placeholder="Senha" secure value={password} />
+        <Field
+          autoCapitalize="none"
+          autoCorrect={false}
+          icon="mail"
+          keyboardType="email-address"
+          onChangeText={setIdentifier}
+          onSubmitEditing={() => passwordRef.current?.focus()}
+          placeholder="E-mail ou WhatsApp"
+          returnKeyType="next"
+          textContentType="username"
+          value={identifier}
+        />
+        <Field
+          autoCapitalize="none"
+          autoCorrect={false}
+          icon="lock"
+          inputRef={passwordRef}
+          onChangeText={setPassword}
+          onSubmitEditing={handleLogin}
+          placeholder="Senha"
+          returnKeyType="go"
+          secure
+          textContentType="password"
+          value={password}
+        />
 
         <Pressable onPress={() => router.push('/forgot-password')} style={styles.linkButton}>
           <Text style={styles.linkText}>Esqueci minha senha</Text>
@@ -95,7 +127,8 @@ export default function LoginScreen() {
         <ActionButton iconDirection="none" onPress={() => router.push('/signup')} secondary>
           Cadastrar como motorista
         </ActionButton>
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -104,6 +137,9 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: SuwaveColors.background,
+  },
+  flex: {
+    flex: 1,
   },
   content: {
     flexGrow: 1,

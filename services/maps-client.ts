@@ -39,6 +39,20 @@ export type DriverRouteSummary = {
   durationSeconds: number;
   geometry: RouteCoordinate[];
   provider: string;
+  steps: DriverRouteStep[];
+};
+
+export type DriverRouteStep = {
+  distanceMeters: number;
+  distanceLabel: string;
+  durationSeconds: number;
+  durationLabel: string;
+  instruction: string;
+  maneuver?: string | null;
+  streetName?: string | null;
+  geometry: RouteCoordinate[];
+  startLocation?: RouteCoordinate | null;
+  endLocation?: RouteCoordinate | null;
 };
 
 const BRAZIL_BOUNDS = {
@@ -151,12 +165,45 @@ type GoogleDirectionsResponse = {
   status?: string;
   routes?: {
     overview_polyline?: { points?: string };
-    legs?: { distance?: { value?: number }; duration?: { value?: number } }[];
+    legs?: {
+      distance?: { text?: string; value?: number };
+      duration?: { text?: string; value?: number };
+      steps?: {
+        distance?: { text?: string; value?: number };
+        duration?: { text?: string; value?: number };
+        end_location?: { lat?: number; lng?: number };
+        html_instructions?: string;
+        maneuver?: string;
+        polyline?: { points?: string };
+        start_location?: { lat?: number; lng?: number };
+      }[];
+    }[];
   }[];
 };
 
 function findComponent(components: GeocodeAddressComponent[], type: string) {
   return components.find((component) => component.types?.includes(type))?.long_name;
+}
+
+function stripHtml(value?: string) {
+  return (value ?? '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractStreetName(instruction: string) {
+  const match = instruction.match(/\b(?:na|no|para|pela|pelo)\s+(.+)$/i);
+  return match?.[1]?.replace(/[.,;:]$/, '').trim() ?? null;
+}
+
+function normalizePoint(point?: { lat?: number; lng?: number }): RouteCoordinate | null {
+  if (typeof point?.lat !== 'number' || typeof point.lng !== 'number') {
+    return null;
+  }
+  return { lat: point.lat, lng: point.lng };
 }
 
 export async function fetchDriverMapPlace(location: DriverMapLocation): Promise<DriverMapPlace> {
@@ -263,6 +310,24 @@ export async function fetchDriverRoute(
 
   const distanceMeters = route.legs?.reduce((total, leg) => total + (leg.distance?.value ?? 0), 0) ?? 0;
   const durationSeconds = route.legs?.reduce((total, leg) => total + (leg.duration?.value ?? 0), 0) ?? 0;
+  const steps = (route.legs ?? []).flatMap((leg) => (leg.steps ?? []).map((step): DriverRouteStep => {
+    const instruction = stripHtml(step.html_instructions);
+    const stepDistanceMeters = step.distance?.value ?? 0;
+    const stepDurationSeconds = step.duration?.value ?? 0;
+
+    return {
+      distanceLabel: step.distance?.text ?? `${Math.round(stepDistanceMeters)} m`,
+      distanceMeters: stepDistanceMeters,
+      durationLabel: step.duration?.text ?? formatDuration(stepDurationSeconds),
+      durationSeconds: stepDurationSeconds,
+      endLocation: normalizePoint(step.end_location),
+      geometry: step.polyline?.points ? decodePolyline(step.polyline.points) : [],
+      instruction: instruction || 'Siga em frente',
+      maneuver: step.maneuver ?? null,
+      startLocation: normalizePoint(step.start_location),
+      streetName: extractStreetName(instruction),
+    };
+  }));
 
   if (!distanceMeters || !durationSeconds) {
     throw new Error('Não foi possível calcular a rota agora.');
@@ -277,6 +342,7 @@ export async function fetchDriverRoute(
     durationSeconds: Math.round(durationSeconds),
     geometry: decodePolyline(points),
     provider: 'google-directions',
+    steps,
   };
 }
 

@@ -32,9 +32,9 @@ npx eslint . --ext .ts,.tsx
 Situacao atual:
 
 - o repositorio local existe
-- no momento desta leitura nao ha `origin` configurado
+- `origin` configurado para `https://github.com/srodrigo28/suwave-android.git`
 
-Fluxo recomendado apos centralizar no GitHub:
+Fluxo recomendado:
 
 ```powershell
 git status --short --branch
@@ -49,6 +49,5 @@ git push origin main
 
 Antes de qualquer push do Android:
 
-- confirmar qual sera o repositorio oficial no GitHub
-- configurar `origin`
+- confirmar se o remote `origin` continua apontando para o repositorio oficial
 - validar o fluxo com tipagem e lint
