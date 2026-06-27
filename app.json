@@ -31,8 +31,7 @@
         "android.permission.CAMERA",
         "android.permission.READ_MEDIA_IMAGES"
       ],
-      "package": "com.suwave.motorista",
-      "versionCode": 1
+      "package": "com.suwave.motorista"
     },
     "web": {
       "output": "static",
@@ -70,6 +69,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "dc38843a-7cf7-496c-8f43-d984d2cefb3b"
+      }
+    },
+    "owner": "sebastiao"
   }
 }
