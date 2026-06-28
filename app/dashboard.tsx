@@ -1,19 +1,20 @@
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Location from 'expo-location';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, AppStateStatus, FlatList, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Notifications from 'expo-notifications';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, AppStateStatus, FlatList, Image, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/motorista/action-button';
 import { FormToast } from '@/components/motorista/form-toast';
 import { SkeletonBox } from '@/components/motorista/skeleton-box';
-import { SuwaveColors } from '@/constants/suwave-theme';
+import { SuwaveAssets, SuwaveColors } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
 import MapView, { Marker, PROVIDER_GOOGLE } from '@/components/motorista/native-map';
+import { snapDriverLocationToRoad } from '@/services/maps-client';
 
 import {
-  acceptDriverRideRequest,
   declineDriverRideRequest,
   DriverDelivery,
   DriverProfile,
@@ -22,6 +23,7 @@ import {
   listAvailableDriverDeliveries,
   listDriverRideRequests,
   pingDriverLocation,
+  setActiveVehicle,
   setDriverOffline,
   setDriverOnline,
 } from '@/services/driver-client';
@@ -37,10 +39,11 @@ import { isVehicleApproved } from '@/utils/vehicles';
  */
 
 export default function DashboardScreen() {
+  const insets = useSafeAreaInsets();
   const { token, logout } = useAuth();
   const setPendingRide = useDriverFlowStore((state) => state.setPendingRide);
   const setPendingDelivery = useDriverFlowStore((state) => state.setPendingDelivery);
-  const setActiveRide = useDriverFlowStore((state) => state.setActiveRide);
+  const activeRide = useDriverFlowStore((state) => state.activeRide);
   const [isOnline, setIsOnline] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -51,16 +54,64 @@ export default function DashboardScreen() {
   const [rideFeedback, setRideFeedback] = useState('');
   const [busyRideId, setBusyRideId] = useState<string | null>(null);
   const [newRideAlert, setNewRideAlert] = useState(false);
+  const [offerAlertMessage, setOfferAlertMessage] = useState('Nova corrida disponível!');
   const [currentLocation, setCurrentLocation] = useState<Location.LocationObject | null>(null);
-  const prevRideCountRef = useRef(0);
+  const [displayCoords, setDisplayCoords] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [locationLabel, setLocationLabel] = useState('Localizando...');
+  const mapRef = useRef<MapView | null>(null);
+  const seenRideIdsRef = useRef<Set<string>>(new Set());
+  const seenDeliveryIdsRef = useRef<Set<string>>(new Set());
+  const snapRequestIdRef = useRef(0);
 
-  const registeredVehicles = driverProfile?.vehicles ?? [];
+  const registeredVehicles = useMemo(
+    () => driverProfile?.vehicles ?? [],
+    [driverProfile?.vehicles],
+  );
   const approvedVehicle = registeredVehicles.find(isVehicleApproved);
   const pendingVehicle = registeredVehicles.find((v) => !isVehicleApproved(v));
   const hasApprovedVehicle = Boolean(approvedVehicle);
   const shouldShowAddVehicle = driverProfile ? registeredVehicles.length === 0 : false;
   const shouldShowVehicleWaiting = registeredVehicles.length > 0 && !hasApprovedVehicle && Boolean(pendingVehicle);
   const effectiveIsOnline = hasApprovedVehicle && isOnline;
+  const fallbackCoords = useRef({ latitude: -11.8604, longitude: -55.5091 }).current;
+  const activeVehicle = useMemo(
+    () => registeredVehicles.find((vehicle) => vehicle.id === driverProfile?.active_vehicle_id)
+      ?? registeredVehicles.find(isVehicleApproved)
+      ?? null,
+    [driverProfile?.active_vehicle_id, registeredVehicles],
+  );
+  const lastKnownCoords = useMemo(
+    () => (
+      driverProfile?.last_latitude != null && driverProfile?.last_longitude != null
+        ? {
+            latitude: driverProfile.last_latitude,
+            longitude: driverProfile.last_longitude,
+          }
+        : null
+    ),
+    [driverProfile?.last_latitude, driverProfile?.last_longitude],
+  );
+  const mapCenter = currentLocation
+    ? (displayCoords ?? {
+        latitude: currentLocation.coords.latitude,
+        longitude: currentLocation.coords.longitude,
+      })
+    : lastKnownCoords ?? fallbackCoords;
+  const activeVehicleMarkerSource = useMemo(() => {
+    if (activeVehicle?.front_photo_url) {
+      return { uri: activeVehicle.front_photo_url };
+    }
+
+    switch (activeVehicle?.vehicle_type) {
+      case 'bike':
+        return SuwaveAssets.workmodeBike;
+      case 'moto':
+        return SuwaveAssets.workmodeMoto;
+      case 'car':
+      default:
+        return SuwaveAssets.workmodeCar;
+    }
+  }, [activeVehicle?.front_photo_url, activeVehicle?.vehicle_type]);
 
   useEffect(() => {
     if (!token) return;
@@ -71,12 +122,60 @@ export default function DashboardScreen() {
       setDriverProfile(profile);
       const hasApproved = (profile.vehicles ?? []).some(isVehicleApproved);
       setIsOnline(hasApproved && profile.is_online);
+      if (!profile.active_vehicle_id) {
+        const firstApprovedVehicle = (profile.vehicles ?? []).find(isVehicleApproved);
+        if (firstApprovedVehicle) {
+          void setActiveVehicle(token, firstApprovedVehicle.id)
+            .then((availability) => {
+              if (cancelled) return;
+              setDriverProfile(availability.driver);
+              setIsOnline(availability.driver.is_online && availability.driver.vehicles.some(isVehicleApproved));
+            })
+            .catch(() => undefined);
+        }
+      }
     }).catch((err) => {
       if (!cancelled) setError(err instanceof Error ? err.message : 'Não foi possível carregar seu perfil.');
     });
 
     return () => { cancelled = true; };
   }, [token]);
+
+  useEffect(() => {
+    if (currentLocation) return;
+    if (!lastKnownCoords) return;
+
+    setLocationLabel('Última localização conhecida');
+  }, [currentLocation, lastKnownCoords]);
+
+  useEffect(() => {
+    if (!currentLocation) {
+      setDisplayCoords(null);
+      return;
+    }
+
+    const requestId = snapRequestIdRef.current + 1;
+    snapRequestIdRef.current = requestId;
+
+    const rawPoint = {
+      lat: currentLocation.coords.latitude,
+      lng: currentLocation.coords.longitude,
+    };
+
+    snapDriverLocationToRoad(rawPoint)
+      .then((snapped) => {
+        if (snapRequestIdRef.current !== requestId) return;
+        setDisplayCoords(
+          snapped
+            ? { latitude: snapped.lat, longitude: snapped.lng }
+            : { latitude: rawPoint.lat, longitude: rawPoint.lng },
+        );
+      })
+      .catch(() => {
+        if (snapRequestIdRef.current !== requestId) return;
+        setDisplayCoords({ latitude: rawPoint.lat, longitude: rawPoint.lng });
+      });
+  }, [currentLocation]);
 
   useEffect(() => {
     if (!effectiveIsOnline || !token) return;
@@ -141,16 +240,144 @@ export default function DashboardScreen() {
     };
   }, [effectiveIsOnline, token]);
 
+  const openRideOffer = useCallback((ride: DriverRideRequest) => {
+    setPendingRide(ride);
+    router.push('/ride-available');
+  }, [setPendingRide]);
+
+  const openDeliveryOffer = useCallback((delivery: DriverDelivery) => {
+    setPendingDelivery(delivery);
+    router.push('/delivery-available');
+  }, [setPendingDelivery]);
+
+  const presentLocalOfferNotification = useCallback(
+    async (input: {
+      body: string;
+      data: Record<string, string>;
+      title: string;
+    }) => {
+      if (Platform.OS === 'web') return;
+
+      try {
+        const permissions = await Notifications.getPermissionsAsync();
+        const status = permissions.status === 'granted'
+          ? permissions.status
+          : (await Notifications.requestPermissionsAsync()).status;
+
+        if (status !== 'granted') {
+          return;
+        }
+
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            body: input.body,
+            data: input.data,
+            sound: true,
+            title: input.title,
+          },
+          trigger: null,
+        });
+      } catch {
+        // Melhor esforço: o fluxo da oferta continua mesmo sem a notificação local.
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
-    const current = rideRequests.length;
-    if (current > prevRideCountRef.current && effectiveIsOnline) {
-      setNewRideAlert(true);
-      const timeout = setTimeout(() => setNewRideAlert(false), 4500);
-      prevRideCountRef.current = current;
-      return () => clearTimeout(timeout);
+    if (!effectiveIsOnline) {
+      seenRideIdsRef.current.clear();
+      seenDeliveryIdsRef.current.clear();
+      return;
     }
-    prevRideCountRef.current = current;
-  }, [rideRequests.length, effectiveIsOnline]);
+
+    const activeRideIds = new Set(rideRequests.map((ride) => ride.id));
+    const activeDeliveryIds = new Set(deliveryOffers.map((delivery) => delivery.id));
+
+    const unseenRide = rideRequests.find((ride) => !seenRideIdsRef.current.has(ride.id));
+    const unseenDelivery = deliveryOffers.find((delivery) => !seenDeliveryIdsRef.current.has(delivery.id));
+
+    seenRideIdsRef.current.forEach((rideId) => {
+      if (!activeRideIds.has(rideId)) {
+        seenRideIdsRef.current.delete(rideId);
+      }
+    });
+    seenDeliveryIdsRef.current.forEach((deliveryId) => {
+      if (!activeDeliveryIds.has(deliveryId)) {
+        seenDeliveryIdsRef.current.delete(deliveryId);
+      }
+    });
+
+    rideRequests.forEach((ride) => {
+      seenRideIdsRef.current.add(ride.id);
+    });
+    deliveryOffers.forEach((delivery) => {
+      seenDeliveryIdsRef.current.add(delivery.id);
+    });
+
+    if (!unseenRide && !unseenDelivery) return;
+    if (activeRide) return;
+
+    setNewRideAlert(true);
+    const timeout = setTimeout(() => setNewRideAlert(false), 4500);
+
+    if (unseenRide) {
+      void presentLocalOfferNotification({
+        body: `${unseenRide.origin_label ?? 'Origem'} -> ${unseenRide.destination_label ?? 'Destino'}`,
+        data: {
+          ride_request_id: unseenRide.id,
+          screen: 'ride-available',
+          type: 'new_ride',
+        },
+        title: 'Nova corrida disponível',
+      });
+      setOfferAlertMessage('Nova corrida disponível!');
+      openRideOffer(unseenRide);
+    } else if (unseenDelivery) {
+      void presentLocalOfferNotification({
+        body: `${unseenDelivery.seller} -> ${unseenDelivery.address}`,
+        data: {
+          delivery_id: unseenDelivery.id,
+          screen: 'delivery-available',
+          type: 'new_delivery',
+        },
+        title: 'Nova entrega disponível',
+      });
+      setOfferAlertMessage('Nova entrega disponível!');
+      openDeliveryOffer(unseenDelivery);
+    }
+
+    return () => clearTimeout(timeout);
+  }, [deliveryOffers, effectiveIsOnline, openDeliveryOffer, openRideOffer, presentLocalOfferNotification, rideRequests]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCurrentLocation() {
+      if (Platform.OS === 'web') return;
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (cancelled) return;
+
+      if (status !== 'granted') {
+        setLocationLabel(lastKnownCoords ? 'Última localização conhecida' : 'Permita a localização');
+        return;
+      }
+
+      try {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        if (cancelled) return;
+        setCurrentLocation(loc);
+        setLocationLabel(`${loc.coords.latitude.toFixed(4)}, ${loc.coords.longitude.toFixed(4)}`);
+      } catch {
+        if (!cancelled) {
+          setLocationLabel(lastKnownCoords ? 'Última localização conhecida' : 'Localização indisponível');
+        }
+      }
+    }
+
+    loadCurrentLocation();
+    return () => { cancelled = true; };
+  }, [lastKnownCoords]);
 
   useEffect(() => {
     if (!effectiveIsOnline || !token) return;
@@ -162,13 +389,17 @@ export default function DashboardScreen() {
       if (status !== 'granted' || cancelled) return;
 
       const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      if (!cancelled) setCurrentLocation(loc);
+      if (!cancelled) {
+        setCurrentLocation(loc);
+        setLocationLabel(`${loc.coords.latitude.toFixed(4)}, ${loc.coords.longitude.toFixed(4)}`);
+      }
 
       const sub = await Location.watchPositionAsync(
         { accuracy: Location.Accuracy.Balanced, distanceInterval: 50, timeInterval: 15000 },
         (location) => {
           if (cancelled) return;
           setCurrentLocation(location);
+          setLocationLabel(`${location.coords.latitude.toFixed(4)}, ${location.coords.longitude.toFixed(4)}`);
           pingDriverLocation(token as string, {
             latitude: location.coords.latitude,
             longitude: location.coords.longitude,
@@ -184,6 +415,30 @@ export default function DashboardScreen() {
     startLocationTracking().then((fn) => { cleanup = fn; });
     return () => { cancelled = true; cleanup?.(); };
   }, [effectiveIsOnline, token]);
+
+  useEffect(() => {
+    const target = currentLocation
+      ? (displayCoords ?? {
+          latitude: currentLocation.coords.latitude,
+          longitude: currentLocation.coords.longitude,
+        })
+      : lastKnownCoords;
+
+    if (!target) return;
+
+    const timeout = setTimeout(() => {
+      mapRef.current?.animateCamera(
+        {
+          center: target,
+          pitch: 0,
+          zoom: currentLocation ? 17 : 15,
+        },
+        { duration: 450 },
+      );
+    }, 180);
+
+    return () => clearTimeout(timeout);
+  }, [currentLocation, displayCoords, lastKnownCoords]);
 
   async function handleToggleOnline() {
     if (!token) { setError('Entre novamente para ficar online.'); return; }
@@ -210,72 +465,114 @@ export default function DashboardScreen() {
     }
   }
 
-  const handleRideAction = useCallback(async (rideId: string, action: 'accept' | 'decline') => {
+  const handleRideDecline = useCallback(async (rideId: string) => {
     if (!token) { setRideFeedback('Entre novamente para responder a corrida.'); return; }
     setBusyRideId(rideId);
     setRideFeedback('');
     try {
-      const updated = action === 'accept'
-        ? await acceptDriverRideRequest(token, rideId)
-        : await declineDriverRideRequest(token, rideId);
+      await declineDriverRideRequest(token, rideId);
       setRideRequests((prev) => prev.filter((r) => r.id !== rideId));
-      if (action === 'accept' && updated.status === 'ACEITA') {
-        setActiveRide(updated);
-        router.push('/ride-active');
-      } else {
-        setRideFeedback('Corrida recusada.');
-      }
+      setRideFeedback('Corrida recusada.');
     } catch (err) {
       setRideFeedback(err instanceof Error ? err.message : 'Não foi possível responder a corrida.');
     } finally {
       setBusyRideId(null);
     }
-  }, [token, setActiveRide]);
+  }, [token]);
 
   return (
     <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
       <MapView
+        ref={mapRef}
         provider={PROVIDER_GOOGLE}
+        initialRegion={{
+          latitude: mapCenter.latitude,
+          longitude: mapCenter.longitude,
+          latitudeDelta: currentLocation ? 0.012 : 0.02,
+          longitudeDelta: currentLocation ? 0.012 : 0.02,
+        }}
+        pitchEnabled={false}
+        rotateEnabled={false}
+        showsBuildings
+        showsCompass={false}
+        showsTraffic={false}
         showsUserLocation
         showsMyLocationButton={false}
         style={styles.map}
-        region={
-          currentLocation
-            ? {
-                latitude: currentLocation.coords.latitude,
-                longitude: currentLocation.coords.longitude,
-                latitudeDelta: 0.012,
-                longitudeDelta: 0.012,
-              }
-            : {
-                latitude: -15.7942,
-                longitude: -47.8822,
-                latitudeDelta: 0.05,
-                longitudeDelta: 0.05,
-              }
-        }
       >
         {currentLocation ? (
           <Marker
             coordinate={{
-              latitude: currentLocation.coords.latitude,
-              longitude: currentLocation.coords.longitude,
+              latitude: displayCoords?.latitude ?? currentLocation.coords.latitude,
+              longitude: displayCoords?.longitude ?? currentLocation.coords.longitude,
             }}
             title="Você está aqui"
-          />
+            anchor={{ x: 0.5, y: 0.5 }}
+          >
+            <View style={styles.vehicleMarkerWrap}>
+              <View style={styles.vehicleMarkerShadow} />
+              <View style={styles.vehicleMarkerBadge}>
+                <Image
+                  resizeMode="cover"
+                  source={activeVehicleMarkerSource}
+                  style={styles.vehicleMarkerImage}
+                />
+              </View>
+            </View>
+          </Marker>
+        ) : lastKnownCoords ? (
+          <Marker coordinate={lastKnownCoords} title="Última posição conhecida">
+            <View style={styles.vehicleMarkerWrap}>
+              <View style={styles.vehicleMarkerShadow} />
+              <View style={[styles.vehicleMarkerBadge, styles.vehicleMarkerBadgeMuted]}>
+                <Image
+                  resizeMode="cover"
+                  source={activeVehicleMarkerSource}
+                  style={styles.vehicleMarkerImage}
+                />
+              </View>
+            </View>
+          </Marker>
         ) : null}
       </MapView>
 
-      <View style={styles.mapControls}>
-        <View style={styles.roundButton}><Feather color="#173447" name="plus" size={20} /></View>
-        <View style={styles.roundButton}><Feather color="#173447" name="minus" size={20} /></View>
-        <View style={styles.roundButton}><Feather color="#173447" name="navigation" size={20} /></View>
+      <View style={[styles.mapControls, { top: insets.top + 10 }]}>
+        <Pressable
+          accessibilityLabel="Aproximar mapa"
+          onPress={() => mapRef.current?.animateCamera({ zoom: 18 }, { duration: 180 })}
+          style={styles.roundButton}
+        >
+          <Feather color="#173447" name="plus" size={20} />
+        </Pressable>
+        <Pressable
+          accessibilityLabel="Afastar mapa"
+          onPress={() => mapRef.current?.animateCamera({ zoom: 14 }, { duration: 180 })}
+          style={styles.roundButton}
+        >
+          <Feather color="#173447" name="minus" size={20} />
+        </Pressable>
+        <Pressable
+          accessibilityLabel="Centralizar no motorista"
+          onPress={() => {
+            const target = currentLocation
+              ? (displayCoords ?? {
+                  latitude: currentLocation.coords.latitude,
+                  longitude: currentLocation.coords.longitude,
+                })
+              : lastKnownCoords;
+            if (!target) return;
+            mapRef.current?.animateCamera({ center: target, zoom: currentLocation ? 17 : 15 }, { duration: 240 });
+          }}
+          style={styles.roundButton}
+        >
+          <Feather color="#173447" name="navigation" size={20} />
+        </Pressable>
       </View>
 
       <Pressable
         accessibilityLabel="Abrir menu do motorista"
         onPress={() => setIsMenuOpen(true)}
-        style={[styles.roundButton, styles.menuButton]}>
+        style={[styles.roundButton, styles.menuButton, { top: insets.top + 10 }]}>
         <Feather color="#173447" name="menu" size={20} />
       </Pressable>
 
@@ -284,17 +581,13 @@ export default function DashboardScreen() {
 
         <View style={styles.locationCopy}>
           <Text style={styles.locationLabel}>{effectiveIsOnline ? 'Disponível em' : 'Localização atual'}</Text>
-          <Text style={styles.locationValue}>
-            {currentLocation
-              ? `${currentLocation.coords.latitude.toFixed(4)}, ${currentLocation.coords.longitude.toFixed(4)}`
-              : 'Localizando...'}
-          </Text>
+          <Text numberOfLines={2} style={styles.locationValue}>{locationLabel}</Text>
         </View>
 
         {newRideAlert ? (
           <View style={styles.newRideAlert}>
             <Feather color={SuwaveColors.black} name="bell" size={16} />
-            <Text style={styles.newRideAlertText}>Nova corrida disponível!</Text>
+            <Text style={styles.newRideAlertText}>{offerAlertMessage}</Text>
           </View>
         ) : null}
 
@@ -325,7 +618,7 @@ export default function DashboardScreen() {
               if (entry.kind === 'ride') {
                 const ride = entry.item;
                 return (
-                  <Pressable onPress={() => { setPendingRide(ride); router.push('/ride-available'); }} style={styles.rideCard}>
+                  <Pressable onPress={() => openRideOffer(ride)} style={styles.rideCard}>
                     <Text style={styles.rideCardTag}>Nova corrida</Text>
                     <Text style={styles.rideCardOrigin}>{ride.origin_label ?? 'Origem'}</Text>
                     <Text style={styles.rideCardDestination}>{ride.destination_label ?? 'Destino'}</Text>
@@ -338,16 +631,16 @@ export default function DashboardScreen() {
                     <View style={styles.rideCardActions}>
                       <Pressable
                         disabled={busyRideId === ride.id}
-                        onPress={() => handleRideAction(ride.id, 'decline')}
+                        onPress={() => handleRideDecline(ride.id)}
                         style={styles.rideCardDecline}>
                         <Text style={styles.rideCardDeclineText}>Recusar</Text>
                       </Pressable>
                       <Pressable
                         disabled={busyRideId === ride.id}
-                        onPress={() => handleRideAction(ride.id, 'accept')}
+                        onPress={() => openRideOffer(ride)}
                         style={styles.rideCardAccept}>
                         <Text style={styles.rideCardAcceptText}>
-                          {busyRideId === ride.id ? 'Enviando...' : 'Aceitar'}
+                          {busyRideId === ride.id ? 'Enviando...' : 'Ver oferta'}
                         </Text>
                       </Pressable>
                     </View>
@@ -379,13 +672,32 @@ export default function DashboardScreen() {
           </View>
         ) : (
           <>
-            <ActionButton
-              iconDirection="none"
-              loading={isSubmitting}
+            <Pressable
+              accessibilityRole="button"
+              disabled={isSubmitting}
               onPress={handleToggleOnline}
-              secondary={effectiveIsOnline}>
-              {isSubmitting ? 'Atualizando...' : effectiveIsOnline ? 'Online' : 'Offline'}
-            </ActionButton>
+              style={({ pressed }) => [
+                styles.availabilityButton,
+                effectiveIsOnline ? styles.availabilityButtonOnline : styles.availabilityButtonOffline,
+                pressed && !isSubmitting ? styles.availabilityButtonPressed : null,
+                isSubmitting ? styles.availabilityButtonDisabled : null,
+              ]}
+            >
+              <View
+                style={[
+                  styles.availabilityDot,
+                  effectiveIsOnline ? styles.availabilityDotOnline : styles.availabilityDotOffline,
+                ]}
+              />
+              <Text
+                style={[
+                  styles.availabilityButtonLabel,
+                  effectiveIsOnline ? styles.availabilityButtonLabelOnline : styles.availabilityButtonLabelOffline,
+                ]}
+              >
+                {isSubmitting ? 'Atualizando...' : effectiveIsOnline ? 'Pesquisando...' : 'Offline'}
+              </Text>
+            </Pressable>
 
             {shouldShowAddVehicle ? (
               <ActionButton iconDirection="none" onPress={() => router.push('/vehicle-mode')} secondary>
@@ -489,6 +801,36 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.14,
     shadowRadius: 12,
     elevation: 3,
+  },
+  vehicleMarkerWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  vehicleMarkerShadow: {
+    position: 'absolute',
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(7, 52, 73, 0.18)',
+    transform: [{ scale: 1.28 }],
+  },
+  vehicleMarkerBadge: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#ffffff',
+    borderWidth: 2,
+    borderColor: '#ffc400',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  vehicleMarkerBadgeMuted: {
+    opacity: 0.82,
+  },
+  vehicleMarkerImage: {
+    width: '100%',
+    height: '100%',
   },
   bottomSheet: {
     backgroundColor: '#fff',
@@ -641,6 +983,52 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '900',
     color: SuwaveColors.black,
+  },
+  availabilityButton: {
+    width: '100%',
+    minHeight: 58,
+    borderRadius: 14,
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    borderWidth: 1.4,
+  },
+  availabilityButtonOnline: {
+    backgroundColor: 'rgba(34, 197, 94, 0.14)',
+    borderColor: 'rgba(22, 163, 74, 0.42)',
+  },
+  availabilityButtonOffline: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderColor: 'rgba(220, 38, 38, 0.3)',
+  },
+  availabilityButtonPressed: {
+    opacity: 0.84,
+  },
+  availabilityButtonDisabled: {
+    opacity: 0.62,
+  },
+  availabilityDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  availabilityDotOnline: {
+    backgroundColor: '#16a34a',
+  },
+  availabilityDotOffline: {
+    backgroundColor: '#dc2626',
+  },
+  availabilityButtonLabel: {
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  availabilityButtonLabelOnline: {
+    color: '#166534',
+  },
+  availabilityButtonLabelOffline: {
+    color: '#b91c1c',
   },
   bottomSheetSkeleton: {
     gap: 12,

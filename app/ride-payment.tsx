@@ -1,12 +1,14 @@
 import { Feather } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/motorista/action-button';
 import { SuwaveColors, SuwaveSpacing, SuwaveTypography } from '@/constants/suwave-theme';
+import { useAuth } from '@/contexts/auth-context';
+import { getDriverEarnings } from '@/services/driver-client';
 import { useDriverFlowStore } from '@/stores/driver-flow-store';
 import { formatCurrency } from '@/utils/format';
 
@@ -40,14 +42,38 @@ function crc16(str: string): string {
 }
 
 export default function RidePaymentScreen() {
+  const { token } = useAuth();
   const ride = useDriverFlowStore((state) => state.activeRide);
   const [copied, setCopied] = useState(false);
+  const [creditedNetFare, setCreditedNetFare] = useState<number | null>(null);
 
-  const paymentMethod = ride?.payment_method ?? 'dinheiro';
-  const grossFare = ride?.gross_fare ?? 0;
-  const netFare = ride?.net_fare ?? 0;
-  const platformFee = ride?.platform_fee ?? 0;
+  const rawPayment = ride?.payment_method ?? 'dinheiro';
+  const clientPayment = ride?.client_payment_method;
+  const paymentMethod = clientPayment ?? rawPayment;
+  const grossFare = ride?.gross_fare ?? ride?.driver_fare ?? creditedNetFare ?? 0;
+  const netFare = ride?.net_fare ?? creditedNetFare ?? (
+    ride?.platform_fee != null ? Math.max(grossFare - ride.platform_fee, 0) : grossFare
+  );
+  const platformFee = ride?.platform_fee ?? Math.max(grossFare - netFare, 0);
   const pixKey = ride?.driver_pix_account ?? null;
+
+  useEffect(() => {
+    if (!token || !ride?.id || (ride.net_fare != null && ride.net_fare > 0)) return;
+    const today = new Date().toISOString().slice(0, 10);
+    let cancelled = false;
+    getDriverEarnings(token, { start: today, end: today })
+      .then((earnings) => {
+        if (cancelled) return;
+        const entry = earnings.history.find((item) => item.id === ride.id);
+        if (entry?.amount_cents != null && entry.amount_cents > 0) {
+          setCreditedNetFare(entry.amount_cents / 100);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [token, ride?.id, ride?.net_fare]);
 
   const pixCode = paymentMethod === 'pix' && pixKey && grossFare > 0
     ? buildPixCode(pixKey, grossFare, 'SUWAVE')
@@ -82,7 +108,10 @@ export default function RidePaymentScreen() {
         <View style={styles.headerRow}>
           <Text style={styles.title}>Receber pagamento</Text>
           <Text style={styles.method}>
-            {paymentMethod === 'pix' ? '📱 PIX' : '💵 Dinheiro'}
+            {clientPayment === 'wallet' ? '💳 Carteira Suwave'
+              : clientPayment === 'pix' ? '📱 PIX Suwave'
+              : rawPayment === 'pix' ? '📱 PIX'
+              : '💵 Dinheiro'}
           </Text>
         </View>
 
@@ -101,7 +130,17 @@ export default function RidePaymentScreen() {
           </View>
         </View>
 
-        {paymentMethod === 'pix' ? (
+        {paymentMethod === 'wallet' ? (
+          <View style={styles.walletSection}>
+            <Feather color="#15803d" name="credit-card" size={48} />
+            <Text style={styles.walletInstruction}>
+              Pagamento confirmado pela Carteira Suwave.
+            </Text>
+            <Text style={styles.walletNote}>
+              Seu líquido estimado é <Text style={styles.walletNetBold}>{netFmtd}</Text>. Continue para avaliar o cliente.
+            </Text>
+          </View>
+        ) : paymentMethod === 'pix' ? (
           <View style={styles.pixSection}>
             {qrUrl ? (
               <>
@@ -146,7 +185,7 @@ export default function RidePaymentScreen() {
         )}
 
         <ActionButton iconDirection="left" onPress={handleFinish}>
-          Confirmar recebimento
+          {paymentMethod === 'wallet' ? 'Continuar para avaliação' : 'Confirmar recebimento'}
         </ActionButton>
         <ActionButton iconDirection="none" onPress={handleFinish} secondary>
           Pular e finalizar
@@ -230,6 +269,30 @@ const styles = StyleSheet.create({
   pixSection: {
     alignItems: 'center',
     gap: 14,
+  },
+  walletSection: {
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#f0fdf4',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    padding: 28,
+  },
+  walletInstruction: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#15803d',
+    textAlign: 'center',
+  },
+  walletNote: {
+    fontSize: 14,
+    color: '#4b5563',
+    textAlign: 'center',
+  },
+  walletNetBold: {
+    fontWeight: '800',
+    color: '#15803d',
   },
   pixInstruction: {
     fontSize: 14,

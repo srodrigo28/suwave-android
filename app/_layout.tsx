@@ -146,6 +146,8 @@ export default function RootLayout() {
         <Stack.Screen name="ride-active" />
         <Stack.Screen name="ride-declined" options={slide} />
         <Stack.Screen name="ride-completed" options={slide} />
+        <Stack.Screen name="ride-driver-rating" options={slide} />
+        <Stack.Screen name="ride-payment" options={slide} />
         <Stack.Screen name="delivery-available" options={modal} />
         <Stack.Screen name="delivery-accepted" />
         <Stack.Screen name="delivery-active" />

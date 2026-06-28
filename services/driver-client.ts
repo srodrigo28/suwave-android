@@ -285,6 +285,7 @@ export type DriverRouteCoordinate = {
 export type DriverRideRequest = {
   accepted_at?: string | null;
   arrived_pickup_at?: string | null;
+  pickup_confirmed_at?: string | null;
   arrived_destination_at?: string | null;
   started_at?: string | null;
   declined_at?: string | null;
@@ -309,6 +310,8 @@ export type DriverRideRequest = {
   route_geometry?: DriverRouteCoordinate[] | null;
   driver_pickup_distance_meters?: number | null;
   payment_method?: 'dinheiro' | 'pix' | null;
+  client_payment_method?: 'pix' | 'wallet' | null;
+  driver_fare?: number | null;
   gross_fare?: number | null;
   net_fare?: number | null;
   platform_fee?: number | null;
@@ -510,7 +513,7 @@ async function parseResponse<T>(response: Response, options: { authRequired?: bo
   return body.data as T;
 }
 
-async function apiRequest(path: string, init?: RequestInit, timeoutMs = 15000) {
+async function apiRequest(path: string, init?: RequestInit, timeoutMs = 30000) {
   const requestId = generateRequestId();
   try {
     return await fetch(`${apiBaseUrl}${path}`, {
@@ -975,6 +978,7 @@ export async function trackDriverRideRequest(rideRequestId: string) {
   return parseResponse<{
     status: RideStatus;
     arrived_pickup_at?: string | null;
+    pickup_confirmed_at?: string | null;
     arrived_destination_at?: string | null;
   }>(response);
 }
@@ -1003,7 +1007,15 @@ export async function confirmDriverDeliveryCode(token: string, rideRequestId: st
     method: 'POST',
   });
 
-  return parseResponse<{ status: string; message?: string }>(response);
+  return parseResponse<{
+    status: RideStatus;
+    message?: string;
+    driver_fare?: number;
+    gross_fare?: number;
+    net_fare?: number;
+    platform_fee?: number;
+    platform_fee_percent?: number;
+  }>(response);
 }
 
 export async function rateDriverPassenger(

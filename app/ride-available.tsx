@@ -46,10 +46,9 @@ export default function RideAvailableScreen() {
         const driver = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
         setDriverCoords(driver);
         if (hasRideOrigin) {
-          fetchDriverRoute(
-            { lat: loc.coords.latitude, lng: loc.coords.longitude },
-            { lat: ride!.origin_latitude!, lng: ride!.origin_longitude! },
-          )
+          const origin = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+          const dest = { lat: ride!.origin_latitude!, lng: ride!.origin_longitude! };
+          fetchDriverRoute(origin, dest)
             .then((summary) => {
               if (!cancelled) {
                 setRouteCoords(summary.geometry.map((pt) => ({ latitude: pt.lat, longitude: pt.lng })));
@@ -59,7 +58,10 @@ export default function RideAvailableScreen() {
             })
             .catch(() => {
               if (!cancelled) {
-                setMessage('Não foi possível abrir a rota do Google Maps agora.');
+                setRouteCoords([
+                  { latitude: origin.lat, longitude: origin.lng },
+                  { latitude: dest.lat, longitude: dest.lng },
+                ]);
               }
             });
         }
@@ -69,7 +71,14 @@ export default function RideAvailableScreen() {
   }, [hasRideOrigin, ride]);
 
   async function handleAccept() {
-    if (!token || !ride) { router.push('/ride-active'); return; }
+    if (!token) {
+      setMessage('Sua sessão expirou. Entre novamente para aceitar a corrida.');
+      return;
+    }
+    if (!ride) {
+      setMessage('A oferta não está mais disponível. Volte ao dashboard e aguarde uma nova corrida.');
+      return;
+    }
     setIsBusy(true);
     setMessage('');
     try {
@@ -85,7 +94,14 @@ export default function RideAvailableScreen() {
   }
 
   async function handleDecline() {
-    if (!token || !ride) { router.replace('/ride-declined'); return; }
+    if (!token) {
+      setMessage('Sua sessão expirou. Entre novamente para recusar a corrida.');
+      return;
+    }
+    if (!ride) {
+      setMessage('A oferta não está mais disponível para recusa.');
+      return;
+    }
     setIsBusy(true);
     setMessage('');
     try {
@@ -139,11 +155,12 @@ export default function RideAvailableScreen() {
     return null;
   })();
 
-  const fareLabel = ride?.gross_fare
-    ? new Intl.NumberFormat('pt-BR', { currency: 'BRL', style: 'currency' }).format(ride.gross_fare)
+  const displayFare = ride?.gross_fare ?? ride?.driver_fare;
+  const fareLabel = displayFare
+    ? new Intl.NumberFormat('pt-BR', { currency: 'BRL', style: 'currency' }).format(displayFare)
     : formatRideFare(ride?.distance_meters, ride?.vehicle_type) ?? 'R$ 0,00';
-  const farePerKm = ride?.gross_fare && ride?.distance_meters
-    ? ride.gross_fare / Math.max(ride.distance_meters / 1000, 1)
+  const farePerKm = displayFare && ride?.distance_meters
+    ? displayFare / Math.max(ride.distance_meters / 1000, 1)
     : null;
   const farePerKmLabel = farePerKm
     ? `${new Intl.NumberFormat('pt-BR', { currency: 'BRL', style: 'currency' }).format(farePerKm)}/km`
@@ -211,7 +228,12 @@ export default function RideAvailableScreen() {
 
       <View style={styles.offerSheet}>
         <View style={styles.paymentPill}>
-          <Text style={styles.paymentText}>{ride?.payment_method === 'pix' ? 'Pix' : 'Dinheiro'}</Text>
+          <Text style={styles.paymentText}>{
+            ride?.client_payment_method === 'wallet' ? 'Carteira Suwave'
+            : ride?.client_payment_method === 'pix' ? 'PIX Suwave'
+            : ride?.payment_method === 'pix' ? 'Pix'
+            : 'Dinheiro'
+          }</Text>
         </View>
 
         <Text style={styles.earningsLabel}>Ganhos da corrida</Text>

@@ -2,19 +2,20 @@ import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Location from 'expo-location';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from '@/components/motorista/native-map';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/motorista/action-button';
 import { FormToast } from '@/components/motorista/form-toast';
-import { SuwaveColors } from '@/constants/suwave-theme';
+import { SuwaveAssets, SuwaveColors } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
 import {
   arrivedDriverDestination,
   arrivedDriverPickup,
   cancelDriverRideRequest,
   completeDriverRideRequest,
+  confirmDriverDeliveryCode,
   pingDriverLocation,
   startDriverRideRequest,
   trackDriverRideRequest,
@@ -33,6 +34,18 @@ function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number)
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function calculateBearing(start: MapCoordinate, end: MapCoordinate) {
+  const lat1 = (start.latitude * Math.PI) / 180;
+  const lat2 = (end.latitude * Math.PI) / 180;
+  const dLng = ((end.longitude - start.longitude) * Math.PI) / 180;
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x =
+    Math.cos(lat1) * Math.sin(lat2)
+    - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  const bearing = (Math.atan2(y, x) * 180) / Math.PI;
+  return (bearing + 360) % 360;
+}
+
 function formatRemainingDistance(meters: number | null): string | null {
   if (meters == null || !Number.isFinite(meters) || meters <= 0) return null;
   if (meters < 1000) return `${Math.round(meters / 10) * 10} m`;
@@ -44,10 +57,55 @@ type MapCoordinate = {
   longitude: number;
 };
 
+function interpolateCoordinate(from: MapCoordinate, to: MapCoordinate, factor: number): MapCoordinate {
+  return {
+    latitude: from.latitude + ((to.latitude - from.latitude) * factor),
+    longitude: from.longitude + ((to.longitude - from.longitude) * factor),
+  };
+}
+
+function findClosestCoordinateIndex(route: MapCoordinate[], current: MapCoordinate) {
+  let bestIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let index = 0; index < route.length; index += 1) {
+    const candidate = route[index];
+    const distance = haversineMeters(current.latitude, current.longitude, candidate.latitude, candidate.longitude);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  }
+
+  return bestIndex;
+}
+
+function getLookAheadPoint(route: MapCoordinate[], startIndex: number, lookAheadMeters: number) {
+  if (route.length === 0) return null;
+  if (route.length === 1 || startIndex >= route.length - 1) return route[route.length - 1];
+
+  let accumulated = 0;
+  for (let index = Math.max(0, startIndex); index < route.length - 1; index += 1) {
+    const from = route[index];
+    const to = route[index + 1];
+    accumulated += haversineMeters(from.latitude, from.longitude, to.latitude, to.longitude);
+    if (accumulated >= lookAheadMeters) {
+      return to;
+    }
+  }
+
+  return route[route.length - 1];
+}
+
 const MIN_ARRIVAL_RADIUS_METERS = 150;
 const MAX_ARRIVAL_RADIUS_METERS = 300;
+const NAVIGATION_LOOK_AHEAD_METERS = 180;
+const NAVIGATION_CAMERA_PITCH = 0;
+const NAVIGATION_CAMERA_ZOOM = 17.8;
+const NAVIGATION_CAMERA_DURATION_MS = 850;
 
 export default function RideActiveScreen() {
+  const { height: windowHeight } = useWindowDimensions();
   const { token } = useAuth();
   const ride = useDriverFlowStore((state) => state.activeRide);
   const setActiveRide = useDriverFlowStore((state) => state.setActiveRide);
@@ -57,6 +115,7 @@ export default function RideActiveScreen() {
   const isDelivery = ride?.request_kind === 'delivery';
   const isInProgress = ride?.status === 'EM_ANDAMENTO';
   const arrivedPickup = Boolean(ride?.arrived_pickup_at);
+  const pickupConfirmed = Boolean(ride?.pickup_confirmed_at);
   const arrivedDestination = Boolean(ride?.arrived_destination_at);
 
   const [driverLocation, setDriverLocation] = useState<Location.LocationObject | null>(null);
@@ -64,11 +123,17 @@ export default function RideActiveScreen() {
   const [navigationCoords, setNavigationCoords] = useState<MapCoordinate[]>([]);
   const [routeSteps, setRouteSteps] = useState<DriverRouteStep[]>([]);
   const [routeMessage, setRouteMessage] = useState('');
+  const [isRouteLoading, setIsRouteLoading] = useState(false);
   const [isDemoMode, setIsDemoMode] = useState(false);
+  const [isSheetExpanded, setIsSheetExpanded] = useState(false);
+  const [isNavigationExpanded, setIsNavigationExpanded] = useState(false);
+  const [deliveryCodeInput, setDeliveryCodeInput] = useState('');
+  const [deliveryCodeError, setDeliveryCodeError] = useState('');
   const lastPingRef = useRef(0);
   const lastRouteOriginRef = useRef<MapCoordinate | null>(null);
   const lastRouteTargetRef = useRef<MapCoordinate | null>(null);
   const lastFitTargetRef = useRef<string | null>(null);
+  const lastDemoAutoActionRef = useRef<string | null>(null);
   const mapRef = useRef<MapView | null>(null);
   const followingRef = useRef(true);
 
@@ -130,6 +195,18 @@ export default function RideActiveScreen() {
   const distanceLabel = formatRemainingDistance(liveRemainingMeters);
   const fare = formatRideFare(ride?.distance_meters, ride?.vehicle_type);
   const gateTargetLabel = isInProgress ? 'destino' : (isDelivery ? 'coleta' : 'passageiro');
+  const sheetCollapsedHeight = Math.max(94, Math.min(108, Math.round(windowHeight * 0.115)));
+  const sheetExpandedMaxHeight = Math.max(360, Math.round(windowHeight * 0.52));
+  const mapControlsBottomOffset = (isSheetExpanded ? sheetExpandedMaxHeight : sheetCollapsedHeight) + 18;
+  const showDeliveryCodeEntry = isInProgress && isDelivery && arrivedDestination;
+  const compactStatusHint = message
+    || routeMessage
+    || (isAtNavigationTarget
+      ? `No ponto de ${gateTargetLabel} · toque para abrir`
+      : `Seguindo até ${gateTargetLabel}`);
+  const sheetToggleLabel = isSheetExpanded
+    ? 'Mapa cheio'
+    : (isAtNavigationTarget ? 'Abrir ações' : 'Ver detalhes');
   const gateMessage = !currentCoordinate
     ? 'Ative a localização para liberar as etapas da corrida.'
     : !target
@@ -156,6 +233,56 @@ export default function RideActiveScreen() {
     return { distanceToManeuver, step };
   }, [currentCoordinate, routeSteps]);
   const maneuverDistanceLabel = formatRemainingDistance(activeStep?.distanceToManeuver ?? null);
+  const closestRouteIndex = useMemo(
+    () => (currentCoordinate && displayRouteCoords.length > 0
+      ? findClosestCoordinateIndex(displayRouteCoords, currentCoordinate)
+      : 0),
+    [currentCoordinate, displayRouteCoords],
+  );
+  const passedRouteCoords = useMemo(
+    () => (displayRouteCoords.length > 1 ? displayRouteCoords.slice(0, Math.min(closestRouteIndex + 1, displayRouteCoords.length)) : []),
+    [closestRouteIndex, displayRouteCoords],
+  );
+  const remainingRouteCoords = useMemo(
+    () => (displayRouteCoords.length > 1 ? displayRouteCoords.slice(Math.max(closestRouteIndex, 0)) : []),
+    [closestRouteIndex, displayRouteCoords],
+  );
+  const lookAheadPoint = useMemo(() => {
+    if (!currentCoordinate || displayRouteCoords.length === 0) return null;
+    return getLookAheadPoint(displayRouteCoords, closestRouteIndex, NAVIGATION_LOOK_AHEAD_METERS);
+  }, [closestRouteIndex, currentCoordinate, displayRouteCoords]);
+  const navigationHeading = useMemo(() => {
+    if (!currentCoordinate) return 0;
+    const sensorHeading = driverLocation?.coords.heading;
+    if (!isDemoMode && sensorHeading != null && Number.isFinite(sensorHeading) && sensorHeading >= 0) {
+      return sensorHeading;
+    }
+    if (lookAheadPoint) {
+      return calculateBearing(currentCoordinate, lookAheadPoint);
+    }
+    if (remainingRouteCoords.length > 1) {
+      return calculateBearing(remainingRouteCoords[0], remainingRouteCoords[1]);
+    }
+    return 0;
+  }, [currentCoordinate, driverLocation?.coords.heading, isDemoMode, lookAheadPoint, remainingRouteCoords]);
+  const cameraCenter = useMemo(() => {
+    if (!currentCoordinate) return null;
+    if (!lookAheadPoint) return currentCoordinate;
+    return interpolateCoordinate(currentCoordinate, lookAheadPoint, 0.34);
+  }, [currentCoordinate, lookAheadPoint]);
+  const nextManeuverLabel = activeStep?.step.maneuver?.replaceAll('_', ' ') ?? null;
+  const demoStageKey = `${ride?.id ?? 'sem-corrida'}:${ride?.status ?? 'sem-status'}:${arrivedPickup ? 'pickup' : 'no-pickup'}:${pickupConfirmed ? 'pickup-confirmed' : 'pickup-pending'}:${arrivedDestination ? 'destination' : 'no-destination'}`;
+  const activeVehicleMarkerSource = useMemo(() => {
+    switch (ride?.vehicle_type) {
+      case 'bike':
+        return SuwaveAssets.workmodeBike;
+      case 'moto':
+        return SuwaveAssets.workmodeMoto;
+      case 'car':
+      default:
+        return SuwaveAssets.workmodeCar;
+    }
+  }, [ride?.vehicle_type]);
 
   useEffect(() => {
     let cancelled = false;
@@ -193,19 +320,23 @@ export default function RideActiveScreen() {
     return () => { cancelled = true; sub?.remove(); };
   }, [token]);
 
-  // Seguir o motorista no mapa (suave). Desliga ao arrastar; volta no botão recentralizar.
+  // Seguir o motorista no mapa (modo navegacao). Desliga ao arrastar; volta no botão recentralizar.
   useEffect(() => {
-    if (!currentCoordinate || !followingRef.current) return;
-    mapRef.current?.animateToRegion(
-      {
-        latitude: currentCoordinate.latitude,
-        longitude: currentCoordinate.longitude,
-        latitudeDelta: 0.012,
-        longitudeDelta: 0.012,
-      },
-      600,
-    );
-  }, [currentCoordinate]);
+    if (!currentCoordinate || !cameraCenter || !followingRef.current) return;
+    try {
+      mapRef.current?.animateCamera(
+        {
+          center: cameraCenter,
+          heading: navigationHeading,
+          pitch: NAVIGATION_CAMERA_PITCH,
+          zoom: NAVIGATION_CAMERA_ZOOM,
+        },
+        { duration: NAVIGATION_CAMERA_DURATION_MS },
+      );
+    } catch {
+      // Emulador pode falhar ao animar camera 3D — ignora silenciosamente.
+    }
+  }, [cameraCenter, currentCoordinate, navigationHeading]);
 
   // Rota real do motorista ate o alvo atual. A route_geometry do pedido e coleta -> destino;
   // antes da coleta ela nao serve para orientar o motorista ate o cliente/coleta.
@@ -241,6 +372,7 @@ export default function RideActiveScreen() {
     lastRouteOriginRef.current = origin;
     lastRouteTargetRef.current = target;
     setRouteMessage('');
+    setIsRouteLoading(true);
 
     fetchDriverRoute(
       { lat: origin.latitude, lng: origin.longitude },
@@ -250,15 +382,24 @@ export default function RideActiveScreen() {
         if (!active) return;
         setNavigationCoords(summary.geometry.map((pt) => ({ latitude: pt.lat, longitude: pt.lng })));
         setRouteSteps(summary.steps);
+        setIsRouteLoading(false);
       })
       .catch(() => {
         if (!active) return;
-        setNavigationCoords([]);
+        const fallback = [
+          { latitude: currentCoordinate!.latitude, longitude: currentCoordinate!.longitude },
+          { latitude: target.latitude, longitude: target.longitude },
+        ];
+        setNavigationCoords(fallback);
         setRouteSteps([]);
-        setRouteMessage('Não foi possível calcular a rota agora. Confira a chave/API do Google Maps.');
+        setIsRouteLoading(false);
+        setRouteMessage('Rota direta — siga pelo mapa.');
       });
 
-    return () => { active = false; };
+    return () => {
+      active = false;
+      setIsRouteLoading(false);
+    };
   }, [currentCoordinate, isDemoMode, navigationCoords.length, target]);
 
   useEffect(() => {
@@ -275,6 +416,94 @@ export default function RideActiveScreen() {
     return () => clearInterval(interval);
   }, [displayRouteCoords, gateTargetLabel, isDemoMode]);
 
+  useEffect(() => {
+    lastDemoAutoActionRef.current = null;
+  }, [demoStageKey]);
+
+  useEffect(() => {
+    if (!isDemoMode || !isAtNavigationTarget || !ride || isBusy) return;
+
+    const actionKey = `${demoStageKey}:${gateTargetLabel}`;
+    if (lastDemoAutoActionRef.current === actionKey) return;
+    lastDemoAutoActionRef.current = actionKey;
+
+    if (isDelivery && !isInProgress && !arrivedPickup) {
+      if (!token) {
+        setMessage('Entre novamente para registrar a chegada na coleta.');
+        return;
+      }
+      setIsBusy(true);
+      setMessage('Demo: registrando chegada na coleta...');
+      void arrivedDriverPickup(token, ride.id)
+        .then((updated) => {
+          setActiveRide(updated);
+          setMessage('Demo: cliente avisado que você chegou para a coleta.');
+        })
+        .catch((err) => {
+          setMessage(err instanceof Error ? err.message : 'Não foi possível registrar a chegada.');
+        })
+        .finally(() => {
+          setIsBusy(false);
+        });
+      return;
+    }
+
+    if (isDelivery && isInProgress && !arrivedDestination) {
+      if (!token) {
+        setMessage('Entre novamente para registrar a chegada no destino.');
+        return;
+      }
+      setIsBusy(true);
+      setMessage('Demo: registrando chegada no destino...');
+      void arrivedDriverDestination(token, ride.id)
+        .then((updated) => {
+          setActiveRide(updated);
+          setMessage('Demo: cliente avisado. Digite o código para confirmar entrega.');
+        })
+        .catch((err) => {
+          setMessage(err instanceof Error ? err.message : 'Não foi possível registrar a chegada.');
+        })
+        .finally(() => {
+          setIsBusy(false);
+        });
+      return;
+    }
+
+    if (isDelivery && !isInProgress && arrivedPickup && !pickupConfirmed) {
+      setMessage('Demonstração chegou à coleta. O cliente foi avisado e precisa aprovar a coleta para liberar a entrega.');
+      return;
+    }
+
+    if (isDelivery && !isInProgress && arrivedPickup && pickupConfirmed) {
+      setMessage('Coleta aprovada pelo cliente. Agora confirme a coleta para seguir até o destino.');
+      return;
+    }
+
+    if (!isDelivery && !isInProgress) {
+      setMessage('Demonstração chegou ao embarque. Agora você já pode iniciar a corrida.');
+      return;
+    }
+
+    if (!isDelivery && isInProgress) {
+      setMessage('Demonstração chegou ao destino. Agora você já pode concluir a corrida.');
+      return;
+    }
+  }, [
+    arrivedDestination,
+    arrivedPickup,
+    demoStageKey,
+    gateTargetLabel,
+    isAtNavigationTarget,
+    isBusy,
+    isDelivery,
+    isDemoMode,
+    isInProgress,
+    pickupConfirmed,
+    ride,
+    setActiveRide,
+    token,
+  ]);
+
   // Ao abrir/trocar etapa, enquadra a rota completa uma vez: motorista + caminho + alvo.
   useEffect(() => {
     if (!currentCoordinate || !target || displayRouteCoords.length < 2) return;
@@ -289,42 +518,54 @@ export default function RideActiveScreen() {
     const timeout = setTimeout(() => {
       mapRef.current?.fitToCoordinates(coordinates, {
         animated: true,
-        edgePadding: { bottom: 260, left: 42, right: 42, top: 80 },
+        edgePadding: { bottom: sheetCollapsedHeight + 36, left: 42, right: 42, top: 92 },
       });
     }, 250);
     return () => clearTimeout(timeout);
-  }, [currentCoordinate, displayRouteCoords, isInProgress, target]);
+  }, [currentCoordinate, displayRouteCoords, isInProgress, sheetCollapsedHeight, target]);
 
-  // Envio em andamento: observar status; quando o CLIENTE confirma o recebimento → CONCLUIDA.
+  // Envio aceito/em andamento: observar confirmação de coleta e conclusão.
   useEffect(() => {
-    if (!isDelivery || !isInProgress || !ride?.id) return;
+    if (!isDelivery || !ride?.id) return;
     const rideId = ride.id;
     const currentRide = ride;
     let active = true;
     const check = async () => {
       try {
         const tracked = await trackDriverRideRequest(rideId);
-        if (active && tracked.status === 'CONCLUIDA') {
+        if (!active) return;
+        if (tracked.status === 'CONCLUIDA') {
           setActiveRide({ ...currentRide, status: 'CONCLUIDA' });
           router.replace('/ride-payment');
+          return;
+        }
+        if (tracked.status === 'ACEITA' || tracked.status === 'EM_ANDAMENTO') {
+          setActiveRide({
+            ...currentRide,
+            status: tracked.status,
+            arrived_pickup_at: tracked.arrived_pickup_at ?? currentRide.arrived_pickup_at ?? null,
+            pickup_confirmed_at: tracked.pickup_confirmed_at ?? currentRide.pickup_confirmed_at ?? null,
+            arrived_destination_at: tracked.arrived_destination_at ?? currentRide.arrived_destination_at ?? null,
+          });
         }
       } catch { /* silencia falhas de poll */ }
     };
+    void check();
     const interval = setInterval(check, 5000);
     return () => { active = false; clearInterval(interval); };
-  }, [isDelivery, isInProgress, ride, setActiveRide]);
+  }, [isDelivery, ride, setActiveRide]);
 
   function recenterOnDriver() {
     followingRef.current = true;
-    if (currentCoordinate) {
-      mapRef.current?.animateToRegion(
+    if (cameraCenter) {
+      mapRef.current?.animateCamera(
         {
-          latitude: currentCoordinate.latitude,
-          longitude: currentCoordinate.longitude,
-          latitudeDelta: 0.012,
-          longitudeDelta: 0.012,
+          center: cameraCenter,
+          heading: navigationHeading,
+          pitch: NAVIGATION_CAMERA_PITCH,
+          zoom: NAVIGATION_CAMERA_ZOOM,
         },
-        500,
+        { duration: 500 },
       );
     }
   }
@@ -334,6 +575,10 @@ export default function RideActiveScreen() {
       setIsDemoMode(false);
       setSimulatedLocation(null);
       setMessage('Demonstração encerrada. Voltando ao GPS real.');
+      return;
+    }
+    if (isRouteLoading) {
+      setMessage('A rota ainda está carregando. Aguarde alguns segundos.');
       return;
     }
     if (displayRouteCoords.length < 2) {
@@ -382,6 +627,18 @@ export default function RideActiveScreen() {
     try {
       const updated = await startDriverRideRequest(token, ride.id);
       setActiveRide(updated);
+      if (isDemoMode) {
+        setNavigationCoords([]);
+        setRouteSteps([]);
+        lastRouteOriginRef.current = null;
+        lastRouteTargetRef.current = null;
+        lastFitTargetRef.current = null;
+        setMessage(
+          isDelivery
+            ? 'Coleta confirmada. A demonstração foi atualizada para seguir até o destino.'
+            : 'Corrida iniciada. A demonstração foi atualizada para seguir até o destino.',
+        );
+      }
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Não foi possível iniciar a corrida.');
     } finally {
@@ -401,9 +658,40 @@ export default function RideActiveScreen() {
     try {
       const updated = await arrivedDriverDestination(token, ride.id);
       setActiveRide(updated);
-      setMessage('Cliente avisado. Aguarde a confirmação de recebimento.');
+      setMessage('Cliente avisado. Peça o código de entrega para finalizar a corrida.');
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Não foi possível registrar a chegada.');
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleConfirmDeliveryCode() {
+    if (!token || !ride) return;
+    const code = deliveryCodeInput.replace(/\D/g, '').slice(0, 4);
+    if (code.length !== 4) {
+      setDeliveryCodeError('Digite o código de 4 dígitos informado pelo cliente.');
+      return;
+    }
+    setIsBusy(true);
+    setDeliveryCodeError('');
+    setMessage('');
+    try {
+      const result = await confirmDriverDeliveryCode(token, ride.id, code);
+      const grossFare = result.gross_fare ?? result.driver_fare ?? ride.gross_fare ?? ride.driver_fare;
+      setActiveRide({
+        ...ride,
+        status: 'CONCLUIDA',
+        driver_fare: result.driver_fare ?? ride.driver_fare,
+        gross_fare: grossFare,
+        net_fare: result.net_fare ?? ride.net_fare,
+        platform_fee: result.platform_fee ?? ride.platform_fee,
+        platform_fee_percent: result.platform_fee_percent ?? ride.platform_fee_percent,
+      });
+      setDeliveryCodeInput('');
+      router.replace('/ride-payment');
+    } catch (err) {
+      setDeliveryCodeError(err instanceof Error ? err.message : 'Código inválido ou entrega ainda não liberada.');
     } finally {
       setIsBusy(false);
     }
@@ -475,6 +763,8 @@ export default function RideActiveScreen() {
   const phaseDetail = isInProgress
     ? (isDelivery ? (ride?.destination_label ?? 'Endereço de entrega') : (ride?.destination_label ?? 'Destino'))
     : (ride?.origin_label ?? (isDelivery ? 'Ponto de coleta' : 'Ponto de embarque'));
+  const upcomingStreetLabel = activeStep?.step.streetName
+    ?? phaseDetail;
 
   return (
     <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
@@ -482,6 +772,12 @@ export default function RideActiveScreen() {
         <MapView
           ref={mapRef}
           provider={PROVIDER_GOOGLE}
+          pitchEnabled={false}
+          rotateEnabled
+          showsBuildings={false}
+          showsCompass={false}
+          showsIndoors={false}
+          showsTraffic={false}
           showsUserLocation={false}
           style={styles.map}
           initialRegion={
@@ -499,8 +795,21 @@ export default function RideActiveScreen() {
           {currentCoordinate ? (
             <Marker
               coordinate={currentCoordinate}
+              anchor={{ x: 0.5, y: 0.5 }}
               title={isDemoMode ? 'Posição demonstrativa' : 'Sua posição'}
-            />
+            >
+              <View style={styles.driverMarkerWrap}>
+                <View style={styles.driverMarkerShadow} />
+                <View style={styles.driverMarkerCore}>
+                  <Image
+                    resizeMode="cover"
+                    source={activeVehicleMarkerSource}
+                    style={styles.driverMarkerImage}
+                  />
+                </View>
+                <View style={styles.driverMarkerPulse} />
+              </View>
+            </Marker>
           ) : null}
           {target ? (
             <Marker
@@ -509,13 +818,26 @@ export default function RideActiveScreen() {
               title={isInProgress ? 'Destino' : 'Coleta'}
             />
           ) : null}
-          {hasRoute ? (
-            <Polyline coordinates={displayRouteCoords} strokeColor="#ffc61a" strokeWidth={4} />
+          {hasRoute && displayRouteCoords.length > 1 ? (
+            <Polyline coordinates={displayRouteCoords} lineCap="round" lineJoin="round" strokeColor="#1a1a2e" strokeWidth={8} />
+          ) : null}
+          {passedRouteCoords.length > 1 ? (
+            <Polyline coordinates={passedRouteCoords} lineCap="round" lineJoin="round" strokeColor="#9ca3af" strokeWidth={5} />
+          ) : null}
+          {remainingRouteCoords.length > 1 ? (
+            <Polyline coordinates={remainingRouteCoords} lineCap="round" lineJoin="round" strokeColor="#1a73e8" strokeWidth={6} />
           ) : null}
         </MapView>
 
         {activeStep?.step ? (
-          <View style={styles.navigationPanel}>
+          <TouchableOpacity
+            activeOpacity={0.94}
+            onPress={() => setIsNavigationExpanded((value) => !value)}
+            style={[
+              styles.navigationPanel,
+              isNavigationExpanded ? styles.navigationPanelExpanded : styles.navigationPanelCollapsed,
+            ]}
+          >
             <View style={styles.navigationIcon}>
               <Feather color="#101820" name="corner-up-right" size={22} />
             </View>
@@ -523,161 +845,284 @@ export default function RideActiveScreen() {
               <Text style={styles.navigationDistance}>
                 {maneuverDistanceLabel ? `Em ${maneuverDistanceLabel}` : 'Siga pela rota'}
               </Text>
-              <Text numberOfLines={2} style={styles.navigationInstruction}>
+              <Text numberOfLines={isNavigationExpanded ? 2 : 1} style={styles.navigationInstruction}>
                 {activeStep.step.instruction}
               </Text>
+              {isNavigationExpanded ? (
+                <View style={styles.navigationMetaRow}>
+                  <Text numberOfLines={1} style={styles.navigationStreet}>
+                    {upcomingStreetLabel}
+                  </Text>
+                  {nextManeuverLabel ? (
+                    <Text numberOfLines={1} style={styles.navigationManeuver}>
+                      {nextManeuverLabel}
+                    </Text>
+                  ) : null}
+                </View>
+              ) : null}
             </View>
-          </View>
+            <Feather
+              color="rgba(255,255,255,0.78)"
+              name={isNavigationExpanded ? 'chevron-up' : 'chevron-down'}
+              size={16}
+            />
+          </TouchableOpacity>
         ) : null}
 
-        <TouchableOpacity accessibilityLabel="Demonstrar rota" onPress={toggleRouteDemo} style={styles.demoButton}>
-          <Feather color="#fff" name={isDemoMode ? 'pause-circle' : 'play-circle'} size={17} />
-          <Text style={styles.demoButtonText}>{isDemoMode ? 'Parar demo' : 'Demo rota'}</Text>
+        <TouchableOpacity
+          accessibilityLabel="Demonstrar rota"
+          onPress={toggleRouteDemo}
+          style={[styles.demoButton, { bottom: mapControlsBottomOffset }]}
+        >
+          <Feather color={SuwaveColors.black} name={isDemoMode ? 'pause-circle' : 'play-circle'} size={17} />
+          <Text style={styles.demoButtonText}>
+            {isDemoMode ? 'Parar demo' : (isRouteLoading ? 'Carregando rota...' : 'Demo rota')}
+          </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity accessibilityLabel="Centralizar no motorista" onPress={recenterOnDriver} style={styles.recenterButton}>
+        <TouchableOpacity
+          accessibilityLabel="Centralizar no motorista"
+          onPress={recenterOnDriver}
+          style={[styles.recenterButton, { bottom: mapControlsBottomOffset }]}
+        >
           <Feather color={SuwaveColors.ink} name="navigation" size={20} />
         </TouchableOpacity>
+        <View style={styles.bottomSheetDock}>
+            <View
+              style={[
+                styles.bottomSheet,
+                isSheetExpanded ? styles.bottomSheetExpanded : styles.bottomSheetCollapsed,
+                {
+                  maxHeight: isSheetExpanded ? sheetExpandedMaxHeight : sheetCollapsedHeight,
+                  minHeight: sheetCollapsedHeight,
+              },
+            ]}
+            >
+              <TouchableOpacity
+                accessibilityLabel={isSheetExpanded ? 'Ocultar ajuda da rota' : 'Abrir ajuda da rota'}
+                onPress={() => setIsSheetExpanded((value) => !value)}
+                style={styles.handleRow}
+              >
+                <View style={styles.handle} />
+              </TouchableOpacity>
+
+            <View style={styles.sheetSummary}>
+              <View style={styles.sheetSummaryTop}>
+                <View style={[styles.phaseTag, isInProgress ? styles.phaseTagActive : styles.phaseTagWaiting]}>
+                  <Feather color={isInProgress ? '#15803d' : '#b45309'} name={isInProgress ? 'navigation' : 'clock'} size={12} />
+                  <Text style={[styles.phaseTagText, isInProgress ? styles.phaseTagTextActive : styles.phaseTagTextWaiting]}>
+                    {isDemoMode ? 'DEMONSTRAÇÃO DA ROTA' : (isInProgress ? (isDelivery ? 'INDO PARA A ENTREGA' : 'EM VIAGEM') : (isDelivery ? 'INDO PARA A COLETA' : 'A CAMINHO DO EMBARQUE'))}
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => setIsSheetExpanded((value) => !value)} style={styles.sheetToggleButton}>
+                  <Text style={styles.sheetToggleLabel}>{sheetToggleLabel}</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text numberOfLines={1} style={styles.sheetCompactAddress}>{phaseDetail}</Text>
+              {eta || compactStatusHint ? (
+                <View style={styles.sheetCompactMeta}>
+                  <Text numberOfLines={1} style={styles.sheetCompactEta}>
+                    {eta ? (distanceLabel ? `${distanceLabel} · ${eta}` : eta) : 'Aguardando ETA'}
+                  </Text>
+                  <Text numberOfLines={1} style={styles.sheetCompactHint}>
+                    {compactStatusHint}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+
+            {isSheetExpanded && showDeliveryCodeEntry ? (
+              <View style={styles.deliveryCodeBoxSticky}>
+                <View style={styles.deliveryCodeHeader}>
+                  <Feather color="#15803d" name="shield" size={18} />
+                  <Text style={styles.deliveryCodeTitle}>Finalizar com código</Text>
+                </View>
+                <Text style={styles.deliveryCodeText}>
+                  Peça ao cliente o código de 4 dígitos exibido no acompanhamento do envio.
+                </Text>
+                <TextInput
+                  keyboardType="number-pad"
+                  maxLength={4}
+                  onChangeText={(value) => {
+                    setDeliveryCodeInput(value.replace(/\D/g, '').slice(0, 4));
+                    setDeliveryCodeError('');
+                  }}
+                  placeholder="0000"
+                  placeholderTextColor="#94a3b8"
+                  style={styles.deliveryCodeInput}
+                  textAlign="center"
+                  value={deliveryCodeInput}
+                />
+                {deliveryCodeError ? <FormToast message={deliveryCodeError} /> : null}
+                <ActionButton
+                  disabled={isBusy || deliveryCodeInput.length !== 4}
+                  loading={isBusy}
+                  onPress={handleConfirmDeliveryCode}
+                >
+                  Finalizar entrega
+                </ActionButton>
+              </View>
+            ) : null}
+
+            {isSheetExpanded ? (
+              <ScrollView
+                contentContainerStyle={styles.sheetExpandedContent}
+                showsVerticalScrollIndicator={false}
+                style={styles.sheetExpandedScroll}
+              >
+                <View style={styles.locationCopy}>
+                  <Text style={styles.locationLabel}>{phaseLabel}</Text>
+                  <Text style={styles.locationValue} numberOfLines={2}>{phaseDetail}</Text>
+                </View>
+
+                {eta ? (
+                  <View style={styles.etaRow}>
+                    <Feather color="#0a6b4f" name="navigation" size={18} />
+                    <View>
+                      <Text style={styles.etaValue}>{distanceLabel ? `${distanceLabel} · ${eta}` : eta}</Text>
+                      <Text style={styles.etaLabel}>
+                        {isInProgress ? 'até o destino' : 'até a coleta'} · {isInProgress ? (ride?.destination_label ?? '') : (ride?.origin_label ?? '')}
+                      </Text>
+                    </View>
+                  </View>
+                ) : null}
+
+                <View style={[styles.gateBox, isAtNavigationTarget ? styles.gateBoxReady : styles.gateBoxLocked]}>
+                  <Feather color={isAtNavigationTarget ? '#15803d' : '#b45309'} name={isAtNavigationTarget ? 'check-circle' : 'lock'} size={16} />
+                  <Text style={[styles.gateText, isAtNavigationTarget ? styles.gateTextReady : styles.gateTextLocked]}>
+                    {gateMessage}
+                  </Text>
+                </View>
+
+                {routeMessage ? <FormToast message={routeMessage} /> : null}
+
+                {isInProgress && isDelivery && arrivedDestination ? (
+                  <View style={styles.deliveryCodeBox}>
+                    <View style={styles.deliveryCodeHeader}>
+                      <Feather color="#15803d" name="shield" size={18} />
+                      <Text style={styles.deliveryCodeTitle}>Finalizar com código</Text>
+                    </View>
+                    <Text style={styles.deliveryCodeText}>
+                      Peça ao cliente o código de 4 dígitos exibido no acompanhamento do envio.
+                    </Text>
+                    <TextInput
+                      keyboardType="number-pad"
+                      maxLength={4}
+                      onChangeText={(value) => {
+                        setDeliveryCodeInput(value.replace(/\D/g, '').slice(0, 4));
+                        setDeliveryCodeError('');
+                      }}
+                      placeholder="0000"
+                      placeholderTextColor="#94a3b8"
+                      style={styles.deliveryCodeInput}
+                      textAlign="center"
+                      value={deliveryCodeInput}
+                    />
+                    {deliveryCodeError ? <FormToast message={deliveryCodeError} /> : null}
+                    <ActionButton
+                      disabled={isBusy || deliveryCodeInput.length !== 4}
+                      loading={isBusy}
+                      onPress={handleConfirmDeliveryCode}
+                    >
+                      Finalizar entrega
+                    </ActionButton>
+                  </View>
+                ) : null}
+
+                <View style={styles.checklist}>
+                  <View style={styles.checklistRow}>
+                    <View style={styles.checklistIcon}>
+                      <Feather color="#fff" name={isDelivery ? 'package' : 'user'} size={11} />
+                    </View>
+                    <Text style={styles.checklistLabel}>
+                      {isDelivery ? `Envio: ${ride?.origin_label ?? 'Coleta'}` : (ride?.passenger_name ?? 'Passageiro SUWAVE')}
+                    </Text>
+                  </View>
+                  {ride?.destination_label ? (
+                    <View style={[styles.checklistRow, styles.checklistRowBorder]}>
+                      <View style={styles.checklistIcon}>
+                        <Feather color="#fff" name="map-pin" size={11} />
+                      </View>
+                      <Text style={styles.checklistLabel}>Destino: {ride.destination_label}</Text>
+                    </View>
+                  ) : null}
+                  {fare ? (
+                    <View style={[styles.checklistRow, styles.checklistRowBorder]}>
+                      <View style={styles.checklistIcon}>
+                        <Feather color="#fff" name="zap" size={11} />
+                      </View>
+                      <Text style={styles.checklistLabel}>Valor estimado: {fare}</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <FormToast message={message} />
+
+                {!isInProgress ? (
+                  isDelivery ? (
+                    <>
+                      {!arrivedPickup ? (
+                        <ActionButton disabled={isBusy || !canArrivePickup} loading={isBusy} onPress={handleArrivedPickup}>
+                          {canArrivePickup ? 'Cheguei na coleta' : 'Aproxime-se da coleta'}
+                        </ActionButton>
+                      ) : (
+                        <ActionButton disabled={isBusy || !canStartDelivery} loading={isBusy} onPress={handleStart}>
+                          {canStartDelivery ? 'Confirmar coleta' : 'Volte à coleta'}
+                        </ActionButton>
+                      )}
+                      <ActionButton disabled={isBusy} iconDirection="none" onPress={handleCancel} secondary>
+                        Cancelar envio
+                      </ActionButton>
+                      <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
+                        Voltar ao dashboard
+                      </ActionButton>
+                    </>
+                  ) : (
+                    <>
+                      <ActionButton disabled={isBusy || !canStartRide} loading={isBusy} onPress={handleStart}>
+                        {canStartRide ? 'Cheguei — Iniciar corrida' : 'Aproxime-se do passageiro'}
+                      </ActionButton>
+                      <ActionButton disabled={isBusy} iconDirection="none" onPress={handleCancel} secondary>
+                        Cancelar corrida
+                      </ActionButton>
+                      <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
+                        Voltar ao dashboard
+                      </ActionButton>
+                    </>
+                  )
+                ) : isDelivery ? (
+                  <>
+                    {!arrivedDestination ? (
+                      <ActionButton disabled={isBusy || !canArriveDestination} loading={isBusy} onPress={handleArrivedDestination}>
+                        {canArriveDestination ? 'Cheguei no destino' : 'Aproxime-se do destino'}
+                      </ActionButton>
+                    ) : null}
+                    <ActionButton disabled={isBusy} iconDirection="none" onPress={handleCancel} secondary>
+                      Cancelar envio
+                    </ActionButton>
+                    <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
+                      Voltar ao dashboard
+                    </ActionButton>
+                  </>
+                ) : (
+                  <>
+                    <ActionButton disabled={isBusy || !canCompleteRide} loading={isBusy} onPress={handleComplete}>
+                      {canCompleteRide ? 'Concluir corrida' : 'Aproxime-se do destino'}
+                    </ActionButton>
+                    <ActionButton disabled={isBusy} iconDirection="none" onPress={handleCancel} secondary>
+                      Cancelar corrida
+                    </ActionButton>
+                    <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
+                      Voltar ao dashboard
+                    </ActionButton>
+                  </>
+                )}
+              </ScrollView>
+            ) : null}
+          </View>
+        </View>
       </View>
-
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.bottomSheet}>
-        <View style={styles.handleRow}>
-          <View style={styles.handle} />
-        </View>
-
-        {/* Fase indicator */}
-        <View style={[styles.phaseTag, isInProgress ? styles.phaseTagActive : styles.phaseTagWaiting]}>
-          <Feather color={isInProgress ? '#15803d' : '#b45309'} name={isInProgress ? 'navigation' : 'clock'} size={12} />
-          <Text style={[styles.phaseTagText, isInProgress ? styles.phaseTagTextActive : styles.phaseTagTextWaiting]}>
-            {isDemoMode ? 'DEMONSTRAÇÃO DA ROTA' : (isInProgress ? (isDelivery ? 'INDO PARA A ENTREGA' : 'EM VIAGEM') : (isDelivery ? 'INDO PARA A COLETA' : 'A CAMINHO DO EMBARQUE'))}
-          </Text>
-        </View>
-
-        <View style={styles.locationCopy}>
-          <Text style={styles.locationLabel}>{phaseLabel}</Text>
-          <Text style={styles.locationValue} numberOfLines={2}>{phaseDetail}</Text>
-        </View>
-
-        {eta ? (
-          <View style={styles.etaRow}>
-            <Feather color="#0a6b4f" name="navigation" size={18} />
-            <View>
-              <Text style={styles.etaValue}>{distanceLabel ? `${distanceLabel} · ${eta}` : eta}</Text>
-              <Text style={styles.etaLabel}>
-                {isInProgress ? 'até o destino' : 'até a coleta'} · {isInProgress ? (ride?.destination_label ?? '') : (ride?.origin_label ?? '')}
-              </Text>
-            </View>
-          </View>
-        ) : null}
-
-        <View style={[styles.gateBox, isAtNavigationTarget ? styles.gateBoxReady : styles.gateBoxLocked]}>
-          <Feather color={isAtNavigationTarget ? '#15803d' : '#b45309'} name={isAtNavigationTarget ? 'check-circle' : 'lock'} size={16} />
-          <Text style={[styles.gateText, isAtNavigationTarget ? styles.gateTextReady : styles.gateTextLocked]}>
-            {gateMessage}
-          </Text>
-        </View>
-
-        {routeMessage ? <FormToast message={routeMessage} /> : null}
-
-        <View style={styles.checklist}>
-          <View style={styles.checklistRow}>
-            <View style={styles.checklistIcon}>
-              <Feather color="#fff" name={isDelivery ? 'package' : 'user'} size={11} />
-            </View>
-            <Text style={styles.checklistLabel}>
-              {isDelivery ? `Envio: ${ride?.origin_label ?? 'Coleta'}` : (ride?.passenger_name ?? 'Passageiro SUWAVE')}
-            </Text>
-          </View>
-          {ride?.destination_label ? (
-            <View style={[styles.checklistRow, styles.checklistRowBorder]}>
-              <View style={styles.checklistIcon}>
-                <Feather color="#fff" name="map-pin" size={11} />
-              </View>
-              <Text style={styles.checklistLabel}>Destino: {ride.destination_label}</Text>
-            </View>
-          ) : null}
-          {fare ? (
-            <View style={[styles.checklistRow, styles.checklistRowBorder]}>
-              <View style={styles.checklistIcon}>
-                <Feather color="#fff" name="zap" size={11} />
-              </View>
-              <Text style={styles.checklistLabel}>Valor estimado: {fare}</Text>
-            </View>
-          ) : null}
-        </View>
-
-        <FormToast message={message} />
-
-        {/* Ações conforme a fase do fluxo */}
-        {!isInProgress ? (
-          isDelivery ? (
-            /* ACEITA (envio): Cheguei na coleta → Confirmar coleta */
-            <>
-              {!arrivedPickup ? (
-                <ActionButton disabled={isBusy || !canArrivePickup} loading={isBusy} onPress={handleArrivedPickup}>
-                  {canArrivePickup ? 'Cheguei na coleta' : 'Aproxime-se da coleta'}
-                </ActionButton>
-              ) : (
-                <ActionButton disabled={isBusy || !canStartDelivery} loading={isBusy} onPress={handleStart}>
-                  {canStartDelivery ? 'Confirmar coleta' : 'Volte à coleta'}
-                </ActionButton>
-              )}
-              <ActionButton disabled={isBusy} iconDirection="none" onPress={handleCancel} secondary>
-                Cancelar envio
-              </ActionButton>
-              <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
-                Voltar ao dashboard
-              </ActionButton>
-            </>
-          ) : (
-            /* ACEITA (corrida): iniciar */
-            <>
-              <ActionButton disabled={isBusy || !canStartRide} loading={isBusy} onPress={handleStart}>
-                {canStartRide ? 'Cheguei — Iniciar corrida' : 'Aproxime-se do passageiro'}
-              </ActionButton>
-              <ActionButton disabled={isBusy} iconDirection="none" onPress={handleCancel} secondary>
-                Cancelar corrida
-              </ActionButton>
-              <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
-                Voltar ao dashboard
-              </ActionButton>
-            </>
-          )
-        ) : isDelivery ? (
-          /* EM_ANDAMENTO (envio): Cheguei no destino → aguardar cliente confirmar */
-          <>
-            {!arrivedDestination ? (
-              <ActionButton disabled={isBusy || !canArriveDestination} loading={isBusy} onPress={handleArrivedDestination}>
-                {canArriveDestination ? 'Cheguei no destino' : 'Aproxime-se do destino'}
-              </ActionButton>
-            ) : (
-              <View style={styles.waitingBox}>
-                <Text style={styles.waitingTitle}>Aguardando o cliente confirmar o recebimento</Text>
-                <Text style={styles.waitingText}>Assim que o cliente confirmar, a entrega é finalizada e o pagamento liberado.</Text>
-              </View>
-            )}
-            <ActionButton disabled={isBusy} iconDirection="none" onPress={handleCancel} secondary>
-              Cancelar envio
-            </ActionButton>
-            <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
-              Voltar ao dashboard
-            </ActionButton>
-          </>
-        ) : (
-          /* EM_ANDAMENTO (corrida): concluir */
-          <>
-            <ActionButton disabled={isBusy || !canCompleteRide} loading={isBusy} onPress={handleComplete}>
-              {canCompleteRide ? 'Concluir corrida' : 'Aproxime-se do destino'}
-            </ActionButton>
-            <ActionButton disabled={isBusy} iconDirection="none" onPress={handleCancel} secondary>
-              Cancelar corrida
-            </ActionButton>
-            <ActionButton iconDirection="none" onPress={() => router.replace('/dashboard')} secondary>
-              Voltar ao dashboard
-            </ActionButton>
-          </>
-        )}
-      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -686,43 +1131,104 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#edf4f4' },
   mapWrap: { flex: 1 },
   map: { flex: 1 },
+  driverMarkerWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  driverMarkerShadow: {
+    position: 'absolute',
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(2, 12, 19, 0.28)',
+    transform: [{ scale: 1.35 }],
+  },
+  driverMarkerCore: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#9be5cf',
+    overflow: 'hidden',
+  },
+  driverMarkerImage: {
+    width: '100%',
+    height: '100%',
+  },
+  driverMarkerPulse: {
+    position: 'absolute',
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    borderWidth: 2,
+    borderColor: 'rgba(99, 215, 180, 0.28)',
+  },
   navigationPanel: {
     position: 'absolute',
     left: 16,
     right: 16,
     top: 16,
-    minHeight: 78,
-    borderRadius: 12,
-    backgroundColor: '#101820',
+    borderRadius: 18,
+    backgroundColor: 'rgba(16, 24, 32, 0.74)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    gap: 10,
+    paddingHorizontal: 12,
     shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 8,
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
+  },
+  navigationPanelCollapsed: {
+    minHeight: 64,
+    paddingVertical: 10,
+  },
+  navigationPanelExpanded: {
+    minHeight: 86,
+    paddingVertical: 12,
   },
   navigationIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: '#ffc61a',
     alignItems: 'center',
     justifyContent: 'center',
   },
   navigationCopy: { flex: 1 },
-  navigationDistance: { color: '#ffc61a', fontSize: 13, fontWeight: '900', marginBottom: 2 },
-  navigationInstruction: { color: '#fff', fontSize: 17, fontWeight: '900', lineHeight: 22 },
+  navigationDistance: { color: '#ffc61a', fontSize: 12, fontWeight: '900', marginBottom: 2 },
+  navigationInstruction: { color: '#fff', fontSize: 16, fontWeight: '900', lineHeight: 20 },
+  navigationMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
+  },
+  navigationStreet: {
+    flex: 1,
+    color: '#8ef2c6',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  navigationManeuver: {
+    color: '#cfd7dd',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'capitalize',
+  },
   demoButton: {
     position: 'absolute',
     left: 16,
     bottom: 16,
     minHeight: 42,
     borderRadius: 21,
-    backgroundColor: '#101820',
+    backgroundColor: SuwaveColors.yellow,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
@@ -733,11 +1239,10 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 5,
   },
-  demoButtonText: { color: '#fff', fontSize: 12, fontWeight: '900' },
+  demoButtonText: { color: SuwaveColors.black, fontSize: 12, fontWeight: '900' },
   recenterButton: {
     position: 'absolute',
     right: 16,
-    bottom: 16,
     width: 48,
     height: 48,
     borderRadius: 24,
@@ -750,16 +1255,85 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 5,
   },
+  bottomSheetDock: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
   bottomSheet: {
-    backgroundColor: '#fff',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
-    paddingHorizontal: 24,
-    paddingTop: 14,
-    paddingBottom: 20,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 12,
+    shadowColor: '#02131f',
+    shadowOpacity: 0.18,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: -4 },
+    elevation: 14,
+    overflow: 'hidden',
   },
-  handleRow: { alignItems: 'center', marginBottom: 12 },
+  bottomSheetCollapsed: {
+    backgroundColor: 'rgba(255,255,255,0.92)',
+  },
+  bottomSheetExpanded: {
+    backgroundColor: '#ffffff',
+  },
+  handleRow: { alignItems: 'center', marginBottom: 6 },
   handle: { width: 56, height: 6, borderRadius: 999, backgroundColor: '#d8e0e5' },
+  sheetSummary: {
+    gap: 4,
+  },
+  sheetSummaryTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  sheetToggleButton: {
+    minHeight: 30,
+    borderRadius: 15,
+    backgroundColor: '#eff4f7',
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetToggleLabel: {
+    color: '#173447',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  sheetCompactAddress: {
+    color: SuwaveColors.ink,
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  sheetCompactMeta: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  sheetCompactEta: {
+    color: '#0a6b4f',
+    flexShrink: 0,
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  sheetCompactHint: {
+    flex: 1,
+    textAlign: 'right',
+    color: '#607381',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  sheetExpandedScroll: {
+    marginTop: 12,
+  },
+  sheetExpandedContent: {
+    paddingBottom: 8,
+  },
   phaseTag: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -768,7 +1342,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     paddingHorizontal: 12,
     paddingVertical: 5,
-    marginBottom: 10,
   },
   phaseTagWaiting: { backgroundColor: '#fef3c7' },
   phaseTagActive: { backgroundColor: '#dcfce7' },
@@ -826,16 +1399,54 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffc61a', alignItems: 'center', justifyContent: 'center',
   },
   checklistLabel: { flex: 1, fontSize: 14, fontWeight: '600', color: '#243949', lineHeight: 20 },
-  waitingBox: {
-    backgroundColor: '#fff7e0',
+  deliveryCodeBox: {
+    backgroundColor: '#f0fdf4',
     borderWidth: 1,
-    borderColor: '#ffe09a',
-    borderRadius: 12,
+    borderColor: '#bbf7d0',
+    borderRadius: 16,
     paddingHorizontal: 16,
     paddingVertical: 14,
     marginBottom: 10,
-    gap: 4,
+    gap: 10,
   },
-  waitingTitle: { fontSize: 15, fontWeight: '900', color: SuwaveColors.ink, textAlign: 'center' },
-  waitingText: { fontSize: 12, color: '#6b6450', textAlign: 'center', lineHeight: 17 },
+  deliveryCodeBoxSticky: {
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginTop: 12,
+    gap: 10,
+  },
+  deliveryCodeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  deliveryCodeTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#14532d',
+    textAlign: 'center',
+  },
+  deliveryCodeText: {
+    fontSize: 12,
+    color: '#166534',
+    textAlign: 'center',
+    lineHeight: 17,
+  },
+  deliveryCodeInput: {
+    minHeight: 56,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#86efac',
+    backgroundColor: '#ffffff',
+    color: '#14532d',
+    fontSize: 28,
+    fontWeight: '900',
+    letterSpacing: 8,
+    paddingHorizontal: 16,
+  },
 });

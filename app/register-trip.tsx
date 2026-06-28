@@ -156,7 +156,11 @@ export default function RegisterTripScreen() {
 
     const timer = setTimeout(async () => {
       try {
-        const places = await searchDriverRoutePlaces(query);
+        const coords = originLocation?.coords;
+        const places = await searchDriverRoutePlaces(
+          query,
+          coords ? { lat: coords.latitude, lng: coords.longitude } : undefined,
+        );
         if (!cancelled) {
           setDestinationSuggestions(places);
         }

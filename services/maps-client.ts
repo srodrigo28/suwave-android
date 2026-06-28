@@ -55,6 +55,15 @@ export type DriverRouteStep = {
   endLocation?: RouteCoordinate | null;
 };
 
+type GoogleNearestRoadsResponse = {
+  snappedPoints?: Array<{
+    location?: {
+      latitude?: number;
+      longitude?: number;
+    };
+  }>;
+};
+
 const BRAZIL_BOUNDS = {
   east: -28.8,
   north: 5.3,
@@ -162,6 +171,7 @@ type GeocodeResponse = {
 };
 
 type GoogleDirectionsResponse = {
+  error_message?: string;
   status?: string;
   routes?: {
     overview_polyline?: { points?: string };
@@ -180,6 +190,8 @@ type GoogleDirectionsResponse = {
     }[];
   }[];
 };
+
+const ROUTE_REQUEST_TIMEOUT_MS = 25000;
 
 function findComponent(components: GeocodeAddressComponent[], type: string) {
   return components.find((component) => component.types?.includes(type))?.long_name;
@@ -235,13 +247,21 @@ export async function fetchDriverMapPlace(location: DriverMapLocation): Promise<
   };
 }
 
-export async function searchDriverRoutePlaces(query: string): Promise<DriverRoutePlace[]> {
+export async function searchDriverRoutePlaces(
+  query: string,
+  origin?: RouteCoordinate,
+): Promise<DriverRoutePlace[]> {
   const apiKey = getApiKey();
   const providerUrl = new URL('https://maps.googleapis.com/maps/api/place/textsearch/json');
   providerUrl.searchParams.set('query', query);
   providerUrl.searchParams.set('region', 'br');
   providerUrl.searchParams.set('language', 'pt-BR');
   providerUrl.searchParams.set('key', apiKey);
+
+  if (origin) {
+    providerUrl.searchParams.set('location', `${origin.lat},${origin.lng}`);
+    providerUrl.searchParams.set('radius', '50000');
+  }
 
   const response = await fetch(providerUrl.toString());
 
@@ -277,6 +297,40 @@ export async function searchDriverRoutePlaces(query: string): Promise<DriverRout
     .filter((place): place is DriverRoutePlace => place !== null);
 }
 
+const WEB_ROUTE_PROXY = 'https://suwave.vercel.app/api/maps/route';
+
+type WebRouteProxyResponse = {
+  distanceKm?: number;
+  distanceLabel?: string;
+  durationLabel?: string;
+  durationSeconds?: number;
+  geometry?: RouteCoordinate[];
+  steps?: DriverRouteStep[];
+};
+
+async function fetchRouteViaProxy(
+  origin: RouteCoordinate,
+  destination: RouteCoordinate,
+): Promise<DriverRouteSummary> {
+  const response = await fetch(WEB_ROUTE_PROXY, {
+    body: JSON.stringify({ origin, destination }),
+    headers: { 'Content-Type': 'application/json' },
+    method: 'POST',
+  });
+  if (!response.ok) throw new Error('Proxy de rota indisponível.');
+  const data = (await response.json()) as WebRouteProxyResponse;
+  if (!data.geometry?.length || !data.distanceKm) throw new Error('Rota vazia.');
+  return {
+    distanceKm: data.distanceKm,
+    distanceLabel: data.distanceLabel ?? `${data.distanceKm} km`,
+    durationLabel: data.durationLabel ?? '—',
+    durationSeconds: data.durationSeconds ?? 0,
+    geometry: data.geometry,
+    provider: 'web-proxy',
+    steps: data.steps ?? [],
+  };
+}
+
 export async function fetchDriverRoute(
   origin: RouteCoordinate,
   destination: RouteCoordinate,
@@ -285,6 +339,18 @@ export async function fetchDriverRoute(
     throw new Error('A rota precisa ter origem e destino no Brasil.');
   }
 
+  // Proxy via servidor web (confiavel); fallback para Google direto
+  try {
+    return await fetchRouteViaProxy(origin, destination);
+  } catch {
+    return await fetchDriverRouteGoogle(origin, destination);
+  }
+}
+
+async function fetchDriverRouteGoogle(
+  origin: RouteCoordinate,
+  destination: RouteCoordinate,
+): Promise<DriverRouteSummary> {
   const apiKey = getApiKey();
   const providerUrl = new URL('https://maps.googleapis.com/maps/api/directions/json');
   providerUrl.searchParams.set('origin', `${origin.lat},${origin.lng}`);
@@ -294,10 +360,24 @@ export async function fetchDriverRoute(
   providerUrl.searchParams.set('region', 'br');
   providerUrl.searchParams.set('key', apiKey);
 
-  const response = await fetch(providerUrl.toString());
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ROUTE_REQUEST_TIMEOUT_MS);
+  let response: Response;
+
+  try {
+    response = await fetch(providerUrl.toString(), { signal: controller.signal });
+  } catch (error) {
+    clearTimeout(timeout);
+    if ((error as Error).name === 'AbortError') {
+      throw new Error('Timeout Google Directions.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
-    throw new Error('Não foi possível calcular a rota agora.');
+    throw new Error(`Não foi possível calcular a rota agora. HTTP ${response.status}.`);
   }
 
   const data = (await response.json()) as GoogleDirectionsResponse;
@@ -305,7 +385,8 @@ export async function fetchDriverRoute(
   const points = route?.overview_polyline?.points;
 
   if (data.status !== 'OK' || !route || !points) {
-    throw new Error('Não foi possível calcular a rota agora.');
+    const details = [data.status, data.error_message].filter(Boolean).join(' - ');
+    throw new Error(details ? `Não foi possível calcular a rota agora. ${details}` : 'Não foi possível calcular a rota agora.');
   }
 
   const distanceMeters = route.legs?.reduce((total, leg) => total + (leg.distance?.value ?? 0), 0) ?? 0;
@@ -344,6 +425,36 @@ export async function fetchDriverRoute(
     provider: 'google-directions',
     steps,
   };
+}
+
+export async function snapDriverLocationToRoad(point: RouteCoordinate): Promise<RouteCoordinate | null> {
+  if (!isInsideBrazilBounds(point)) {
+    return null;
+  }
+
+  const apiKey = getApiKey();
+  const providerUrl = new URL('https://roads.googleapis.com/v1/nearestRoads');
+  providerUrl.searchParams.set('points', `${point.lat},${point.lng}`);
+  providerUrl.searchParams.set('key', apiKey);
+
+  const response = await fetch(providerUrl.toString());
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const data = (await response.json()) as GoogleNearestRoadsResponse;
+  const snappedPoint = data.snappedPoints?.[0]?.location;
+
+  if (
+    typeof snappedPoint?.latitude !== 'number'
+    || typeof snappedPoint?.longitude !== 'number'
+  ) {
+    return null;
+  }
+
+  const normalized = { lat: snappedPoint.latitude, lng: snappedPoint.longitude };
+  return isInsideBrazilBounds(normalized) ? normalized : null;
 }
 
 export function formatDriverMapPlace(place: DriverMapPlace | null) {

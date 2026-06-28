@@ -9,8 +9,9 @@ import { FormToast } from '@/components/motorista/form-toast';
 import { SkeletonBox } from '@/components/motorista/skeleton-box';
 import { SuwaveAssets, SuwaveColors, SuwaveSpacing } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
-import { DriverVehicle, getDriverProfile } from '@/services/driver-client';
+import { DriverVehicle, getDriverProfile, setActiveVehicle } from '@/services/driver-client';
 import { useDriverFlowStore } from '@/stores/driver-flow-store';
+import { formatVehicleYear, getVehicleStatusLabel, isVehicleApproved, normalizeBrandName } from '@/utils/vehicles';
 
 /**
  * Equivalente nativo da tela `vehicle-list` (`VehicleListScreen`) em
@@ -24,18 +25,75 @@ export default function VehicleListScreen() {
   const setVehicleUploads = useDriverFlowStore((state) => state.setVehicleUploads);
 
   const [vehicles, setVehicles] = useState<DriverVehicle[]>([]);
+  const [activeVehicleId, setActiveVehicleId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const [isSelectingVehicleId, setIsSelectingVehicleId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token) return;
+    const authToken = token;
     let cancelled = false;
-    getDriverProfile(token)
-      .then((profile) => { if (!cancelled) setVehicles(profile.vehicles); })
-      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : 'Não foi possível carregar seus veículos.'); })
-      .finally(() => { if (!cancelled) setIsLoading(false); });
+
+    async function syncVehicles() {
+      try {
+        const profile = await getDriverProfile(authToken);
+        if (cancelled) return;
+
+        const approvedVehicles = profile.vehicles.filter(isVehicleApproved);
+        const nextActiveVehicleId = profile.active_vehicle_id ?? approvedVehicles[0]?.id ?? null;
+
+        setVehicles(profile.vehicles);
+        setActiveVehicleId(nextActiveVehicleId);
+
+        if (!profile.active_vehicle_id && approvedVehicles[0]) {
+          try {
+            const availability = await setActiveVehicle(authToken, approvedVehicles[0].id);
+            if (cancelled) return;
+            setVehicles(availability.driver.vehicles);
+            setActiveVehicleId(availability.driver.active_vehicle_id ?? approvedVehicles[0].id);
+          } catch (err) {
+            if (!cancelled) {
+              setError(err instanceof Error ? err.message : 'Não foi possível selecionar o veículo ativo automaticamente.');
+            }
+          }
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Não foi possível carregar seus veículos.');
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    }
+
+    syncVehicles();
     return () => { cancelled = true; };
   }, [token]);
+
+  async function handleSelectVehicle(vehicle: DriverVehicle) {
+    if (!token) {
+      setError('Entre novamente para selecionar o veículo ativo.');
+      return;
+    }
+    if (!isVehicleApproved(vehicle)) {
+      setError('Somente veículos aprovados podem ficar ativos para aparecer ao cliente.');
+      return;
+    }
+    if (vehicle.id === activeVehicleId) {
+      return;
+    }
+
+    setIsSelectingVehicleId(vehicle.id);
+    setError('');
+    try {
+      const availability = await setActiveVehicle(token, vehicle.id);
+      setVehicles(availability.driver.vehicles);
+      setActiveVehicleId(availability.driver.active_vehicle_id ?? vehicle.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível selecionar este veículo agora.');
+    } finally {
+      setIsSelectingVehicleId(null);
+    }
+  }
 
   function handleEditVehicle(vehicle: DriverVehicle) {
     setEditingVehicleId(vehicle.id);
@@ -82,7 +140,14 @@ export default function VehicleListScreen() {
         ) : vehicles.length > 0 ? (
           <View style={styles.list}>
             {vehicles.map((vehicle) => (
-              <VehicleCard key={vehicle.id} onPress={() => handleEditVehicle(vehicle)} vehicle={vehicle} />
+              <VehicleCard
+                activeVehicleId={activeVehicleId}
+                isSelecting={isSelectingVehicleId === vehicle.id}
+                key={vehicle.id}
+                onEdit={() => handleEditVehicle(vehicle)}
+                onSelect={() => handleSelectVehicle(vehicle)}
+                vehicle={vehicle}
+              />
             ))}
           </View>
         ) : (
@@ -115,32 +180,34 @@ function VehicleCardSkeleton() {
   );
 }
 
-function normalizeBrandName(value: string) {
-  return value.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-}
-
-function getVehicleStatusLabel(status?: string | null) {
-  if (!status) return 'Em análise';
-  switch (status.toUpperCase()) {
-    case 'APROVADO': return 'Ativo';
-    case 'REJEITADO': return 'Reprovado';
-    case 'PENDENTE': return 'Em análise';
-    default: return status;
-  }
-}
-
-function formatVehicleYear(value?: string | number | null) {
-  if (value == null || value === '') return 'Não informado';
-  return String(value);
-}
-
-function VehicleCard({ vehicle, onPress }: { vehicle: DriverVehicle; onPress: () => void }) {
+function VehicleCard({
+  activeVehicleId,
+  isSelecting,
+  onEdit,
+  onSelect,
+  vehicle,
+}: {
+  activeVehicleId: string | null;
+  isSelecting: boolean;
+  onEdit: () => void;
+  onSelect: () => void;
+  vehicle: DriverVehicle;
+}) {
   const imageUri = vehicle.front_photo_url ?? vehicle.side_photo_url ?? vehicle.rear_photo_url ?? vehicle.interior_photo_url ?? null;
   const isApproved = vehicle.status?.toUpperCase() === 'APROVADO';
+  const isActive = vehicle.id === activeVehicleId;
   const statusLabel = getVehicleStatusLabel(vehicle.status);
+  const selectionLabel = isActive ? 'Selecionado' : isApproved ? 'Selecionar' : 'Em análise';
 
   return (
-    <Pressable onPress={onPress} style={styles.vehicleCard}>
+    <Pressable
+      onPress={onSelect}
+      style={({ pressed }) => [
+        styles.vehicleCard,
+        isActive && styles.vehicleCardActive,
+        pressed && styles.vehicleCardPressed,
+      ]}
+    >
       <View style={styles.vehicleCardImage}>
         {imageUri ? (
           <Image resizeMode="cover" source={{ uri: imageUri }} style={styles.vehicleCardImageSource} />
@@ -151,13 +218,58 @@ function VehicleCard({ vehicle, onPress }: { vehicle: DriverVehicle; onPress: ()
       <View style={styles.vehicleCardCopy}>
         <View style={styles.vehicleCardTopLine}>
           <Text style={styles.vehicleCardName}>{[vehicle.brand, vehicle.model].filter(Boolean).join(' ')}</Text>
-          <Text style={[styles.vehicleCardStatus, isApproved && styles.vehicleCardStatusApproved]}>{statusLabel}</Text>
+          <Text
+            style={[
+              styles.vehicleCardStatus,
+              isApproved && styles.vehicleCardStatusApproved,
+              isActive && styles.vehicleCardStatusSelected,
+            ]}
+          >
+            {isActive ? 'Ativo agora' : statusLabel}
+          </Text>
         </View>
         <Text style={styles.vehicleCardDetail}>Placa: {vehicle.plate || 'Não informada'}</Text>
         <Text style={styles.vehicleCardDetail}>Ano: {formatVehicleYear(vehicle.year)}</Text>
         {vehicle.color ? <Text style={styles.vehicleCardDetail}>Cor: {vehicle.color}</Text> : null}
+        <View style={styles.vehicleCardActionRow}>
+          <View
+            style={[
+              styles.vehicleSelectionPill,
+              isActive && styles.vehicleSelectionPillActive,
+              !isApproved && styles.vehicleSelectionPillDisabled,
+            ]}
+          >
+            <Feather
+              color={isActive ? '#0a5c3a' : !isApproved ? '#8a6a24' : '#0a2d43'}
+              name={isActive ? 'check-circle' : isApproved ? 'radio' : 'clock'}
+              size={13}
+            />
+            <Text
+              style={[
+                styles.vehicleSelectionPillText,
+                isActive && styles.vehicleSelectionPillTextActive,
+                !isApproved && styles.vehicleSelectionPillTextDisabled,
+              ]}
+            >
+              {isSelecting ? 'Salvando...' : selectionLabel}
+            </Text>
+          </View>
+          <Text style={styles.vehicleCardHint}>
+            {isActive
+              ? 'Este veículo aparece para o cliente e no mapa.'
+              : isApproved
+                ? 'Toque para usar este veículo nas próximas corridas.'
+                : 'Aguardando aprovação para ficar disponível.'}
+          </Text>
+        </View>
       </View>
-      <Feather color="#071a36" name="chevron-right" size={22} />
+      <Pressable
+        accessibilityLabel={`Editar ${vehicle.brand} ${vehicle.model}`}
+        onPress={onEdit}
+        style={({ pressed }) => [styles.vehicleEditButton, pressed && styles.vehicleEditButtonPressed]}
+      >
+        <Feather color="#071a36" name="chevron-right" size={22} />
+      </Pressable>
     </Pressable>
   );
 }
@@ -259,7 +371,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#eef0f4',
-    borderRadius: 10,
+    borderRadius: 18,
     padding: 12,
     shadowColor: '#081a36',
     shadowOffset: { width: 0, height: 5 },
@@ -267,10 +379,21 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     elevation: 1,
   },
+  vehicleCardActive: {
+    backgroundColor: '#fff8d8',
+    borderColor: '#ffc400',
+    shadowColor: '#a16c00',
+    shadowOpacity: 0.18,
+    shadowRadius: 18,
+    elevation: 3,
+  },
+  vehicleCardPressed: {
+    opacity: 0.88,
+  },
   vehicleCardImage: {
     width: 90,
     height: 64,
-    borderRadius: 8,
+    borderRadius: 12,
     overflow: 'hidden',
     backgroundColor: '#eef2f5',
   },
@@ -307,8 +430,64 @@ const styles = StyleSheet.create({
     color: '#0a5c3a',
     backgroundColor: '#d4f5e4',
   },
+  vehicleCardStatusSelected: {
+    color: '#0a2d43',
+    backgroundColor: '#ffe37a',
+  },
   vehicleCardDetail: {
     fontSize: 13,
     color: '#59677c',
+  },
+  vehicleCardActionRow: {
+    gap: 8,
+    marginTop: 8,
+  },
+  vehicleSelectionPill: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#edf4ff',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  vehicleSelectionPillActive: {
+    backgroundColor: '#dff7ea',
+  },
+  vehicleSelectionPillDisabled: {
+    backgroundColor: '#f5efe0',
+  },
+  vehicleSelectionPillText: {
+    color: '#0a2d43',
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  vehicleSelectionPillTextActive: {
+    color: '#0a5c3a',
+  },
+  vehicleSelectionPillTextDisabled: {
+    color: '#8a6a24',
+  },
+  vehicleCardHint: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#5c6d79',
+    lineHeight: 15,
+  },
+  vehicleEditButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#f3f6f8',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'flex-start',
+  },
+  vehicleEditButtonPressed: {
+    opacity: 0.78,
+  },
+  bottomSheetSkeleton: {
+    gap: 12,
   },
 });

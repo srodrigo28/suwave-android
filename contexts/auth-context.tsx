@@ -31,6 +31,17 @@ function onlyDigits(value: string) {
   return value.replace(/\D/g, '');
 }
 
+function isTransientNetworkError(error: unknown) {
+  return (
+    error instanceof Error
+    && !(error instanceof DriverApiError)
+    && (
+      error.message.includes('A API demorou muito para responder')
+      || error.message.includes('API principal indisponível')
+    )
+  );
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [driver, setDriver] = useState<DriverProfile | null>(null);
@@ -61,10 +72,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const profile = await getDriverProfile(storedToken);
         if (!cancelled) setDriver(profile);
-      } catch {
-        if (!cancelled) {
+      } catch (error) {
+        if (!cancelled && error instanceof DriverApiError && error.code === 'token_expired') {
           await deleteSecureItem(TOKEN_STORAGE_KEY);
           setToken(null);
+          setDriver(null);
+        } else if (!cancelled && isTransientNetworkError(error)) {
+          setSessionError('Não foi possível validar sua sessão agora. Verifique a conexão e tente novamente.');
         }
       } finally {
         if (!cancelled) setIsRestoring(false);
@@ -97,7 +111,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await setSecureItem(TOKEN_STORAGE_KEY, accessToken);
     setSessionError('');
     setToken(accessToken);
-    return refreshProfile(accessToken);
+    try {
+      return await refreshProfile(accessToken);
+    } catch (error) {
+      if (isTransientNetworkError(error)) {
+        setSessionError('Sessão iniciada, mas o perfil ainda não carregou. Verifique a conexão e continue.');
+        return null;
+      }
+      throw error;
+    }
   }, [refreshProfile]);
 
   const login = useCallback(async ({ identifier, password }: { identifier: string; password: string }) => {
@@ -113,7 +135,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         session = await loginDriverAccount(credentials);
         break;
       } catch (err) {
-        const shouldRetry = err instanceof DriverApiError && err.code === 'internal_error' && attempt < 3;
+        const shouldRetry = attempt < 3 && (
+          (err instanceof DriverApiError && err.code === 'internal_error')
+          || isTransientNetworkError(err)
+        );
         if (!shouldRetry) throw err;
         await new Promise((resolve) => setTimeout(resolve, attempt * 650));
       }
