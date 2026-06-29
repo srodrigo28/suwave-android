@@ -47,12 +47,11 @@ export function addDaysToInputDate(value: string, days: number) {
 
 export function getWeekRange(weekOffset: number): { start: string; end: string } {
   const today = new Date();
-  const end = new Date(today);
-  end.setDate(today.getDate() + weekOffset * 7);
-  if (end > today) end.setTime(today.getTime());
-  const start = new Date(end);
-  start.setDate(end.getDate() - 6);
-  return { start: toISODate(start), end: toISODate(end) };
+  const sunday = new Date(today);
+  sunday.setDate(today.getDate() - today.getDay() + weekOffset * 7);
+  const saturday = new Date(sunday);
+  saturday.setDate(sunday.getDate() + 6);
+  return { start: toISODate(sunday), end: toISODate(saturday) };
 }
 
 export function getPeriodRange(period: PeriodKey, customRange: { start: string; end: string }) {
