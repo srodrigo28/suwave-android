@@ -1,8 +1,8 @@
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from '@/components/motorista/native-map';
+import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+
 import Animated, { useAnimatedStyle, useSharedValue, withDelay, withSequence, withTiming } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -341,6 +341,36 @@ function getPlaceholderDays(start: string, end: string): DriverEarningsDailyBrea
   return days;
 }
 
+const STATIC_MAP_KEY = 'AIzaSyChDUP6vl26vtKvMBeQ7O1ya394N5YIzc0';
+
+function buildStaticMapUrl(
+  trip: DriverEarningsHistory,
+  hasOrigin: boolean,
+  hasDest: boolean,
+  polyCoords: { latitude: number; longitude: number }[],
+): string {
+  const params = [
+    'size=600x260',
+    'scale=2',
+    'maptype=roadmap',
+    `key=${STATIC_MAP_KEY}`,
+  ];
+  if (hasOrigin) {
+    params.push(`markers=color:red|${trip.origin_latitude},${trip.origin_longitude}`);
+  }
+  if (hasDest) {
+    params.push(`markers=color:green|${trip.destination_latitude},${trip.destination_longitude}`);
+  }
+  if (polyCoords.length > 1) {
+    const encoded = polyCoords
+      .filter((_, i) => i % 3 === 0 || i === polyCoords.length - 1)
+      .map((c) => `${c.latitude.toFixed(5)},${c.longitude.toFixed(5)}`)
+      .join('|');
+    params.push(`path=color:0xFFCC00ff|weight:4|${encoded}`);
+  }
+  return `https://maps.googleapis.com/maps/api/staticmap?${params.join('&')}`;
+}
+
 function TripDetailModal({ trip, onClose }: { trip: DriverEarningsHistory | null; onClose: () => void }) {
   if (!trip) return null;
 
@@ -389,21 +419,11 @@ function TripDetailModal({ trip, onClose }: { trip: DriverEarningsHistory | null
           </View>
 
           {mapRegion ? (
-            <MapView provider={PROVIDER_GOOGLE} region={mapRegion} style={styles.detailMap}>
-              {hasOrigin ? (
-                <Marker coordinate={{ latitude: trip.origin_latitude!, longitude: trip.origin_longitude! }} title="Origem" />
-              ) : null}
-              {hasDest ? (
-                <Marker
-                  coordinate={{ latitude: trip.destination_latitude!, longitude: trip.destination_longitude! }}
-                  pinColor="#25c684"
-                  title="Destino"
-                />
-              ) : null}
-              {hasRoute ? (
-                <Polyline coordinates={polylineCoords} strokeColor={SuwaveColors.yellow} strokeWidth={3} />
-              ) : null}
-            </MapView>
+            <Image
+              resizeMode="cover"
+              source={{ uri: buildStaticMapUrl(trip, hasOrigin, hasDest, polylineCoords) }}
+              style={styles.detailMap}
+            />
           ) : null}
 
           <ScrollView contentContainerStyle={styles.detailBody} showsVerticalScrollIndicator={false}>
