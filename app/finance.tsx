@@ -3,7 +3,7 @@ import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from '@/components/motorista/native-map';
-import Animated, { useAnimatedStyle, useSharedValue, withDelay, withTiming } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withDelay, withSequence, withTiming } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { FormToast } from '@/components/motorista/form-toast';
@@ -12,12 +12,9 @@ import { SuwaveColors, SuwaveSpacing } from '@/constants/suwave-theme';
 import { useAuth } from '@/contexts/auth-context';
 import { DriverEarnings, DriverEarningsDailyBreakdown, DriverEarningsHistory, getDriverEarnings } from '@/services/driver-client';
 import {
-  PERIOD_LABELS,
-  PERIOD_OPTIONS,
-  PeriodKey,
   formatOnlineDuration,
   formatPeriodRangeLabel,
-  getPeriodRange,
+  getWeekRange,
   getWeekdayLabel,
 } from '@/utils/finance';
 
@@ -31,13 +28,28 @@ export default function FinanceScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [earnings, setEarnings] = useState<DriverEarnings | null>(null);
-  const [period, setPeriod] = useState<PeriodKey>('7d');
-  const [customRange] = useState<{ start: string; end: string }>({ start: '', end: '' });
-  const [showPeriodSheet, setShowPeriodSheet] = useState(false);
+  const [weekOffset, setWeekOffset] = useState(0);
   const [selectedTrip, setSelectedTrip] = useState<DriverEarningsHistory | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
-  const range = useMemo(() => getPeriodRange(period, customRange), [period, customRange]);
+  const slideX = useSharedValue(0);
+  const slideOpacity = useSharedValue(1);
+
+  const slideStyle = useAnimatedStyle(() => ({
+    opacity: slideOpacity.value,
+    transform: [{ translateX: slideX.value }],
+  }));
+
+  function navigateWeek(dir: 'prev' | 'next') {
+    if (dir === 'next' && weekOffset >= 0) return;
+    const enterFrom = dir === 'prev' ? -36 : 36;
+    slideX.value = withSequence(withTiming(enterFrom, { duration: 0 }), withTiming(0, { duration: 220 }));
+    slideOpacity.value = withSequence(withTiming(0.2, { duration: 0 }), withTiming(1, { duration: 220 }));
+    setWeekOffset((prev) => prev + (dir === 'prev' ? -1 : 1));
+    setSelectedDate(null);
+  }
+
+  const range = useMemo(() => getWeekRange(weekOffset), [weekOffset]);
   const rangeLabel = formatPeriodRangeLabel(range.start, range.end);
 
   const dailyBreakdown = earnings?.daily_breakdown ?? [];
@@ -97,15 +109,33 @@ export default function FinanceScreen() {
           </Pressable>
         </View>
 
-        <Pressable onPress={() => setShowPeriodSheet(true)} style={styles.periodTrigger}>
-          <Feather color="#071a36" name="calendar" size={20} />
-          <View style={styles.periodCopy}>
-            <Text style={styles.periodLabel}>{PERIOD_LABELS[period]}</Text>
-            <Text style={styles.periodRange}>{rangeLabel}</Text>
+        {/* Navegação semanal */}
+        <View style={styles.weekNav}>
+          <Pressable
+            accessibilityLabel="Semana anterior"
+            onPress={() => navigateWeek('prev')}
+            style={styles.weekBtn}
+          >
+            <Feather color="#071a36" name="chevron-left" size={22} />
+          </Pressable>
+          <View style={styles.weekInfo}>
+            <Feather color="#071a36" name="calendar" size={18} />
+            <View style={styles.weekCopy}>
+              <Text style={styles.weekLabel}>7 dias</Text>
+              <Text style={styles.weekRange}>{rangeLabel}</Text>
+            </View>
           </View>
-          <Feather color="#9aabb8" name="chevron-right" size={20} />
-        </Pressable>
+          <Pressable
+            accessibilityLabel="Próxima semana"
+            disabled={weekOffset >= 0}
+            onPress={() => navigateWeek('next')}
+            style={[styles.weekBtn, weekOffset >= 0 && styles.weekBtnDisabled]}
+          >
+            <Feather color={weekOffset >= 0 ? '#c9d6de' : '#071a36'} name="chevron-right" size={22} />
+          </Pressable>
+        </View>
 
+        <Animated.View style={slideStyle}>
         <View style={styles.totalBlock}>
           <View style={styles.totalMeta}>
             <Text style={styles.totalLabel}>
@@ -212,40 +242,10 @@ export default function FinanceScreen() {
             ))}
           </View>
         ) : null}
+        </Animated.View>
       </ScrollView>
 
       <TripDetailModal onClose={() => setSelectedTrip(null)} trip={selectedTrip} />
-
-      <Modal animationType="fade" onRequestClose={() => setShowPeriodSheet(false)} transparent visible={showPeriodSheet}>
-        <Pressable onPress={() => setShowPeriodSheet(false)} style={styles.sheetOverlay}>
-          <Pressable style={styles.sheet}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Selecionar período</Text>
-              <Pressable accessibilityLabel="Fechar seleção de período" onPress={() => setShowPeriodSheet(false)} style={styles.sheetClose}>
-                <Feather color="#071a36" name="x" size={18} />
-              </Pressable>
-            </View>
-
-            <View style={styles.sheetOptions}>
-              {PERIOD_OPTIONS.map((option) => {
-                const active = period === option;
-                return (
-                  <Pressable
-                    accessibilityState={{ selected: active }}
-                    key={option}
-                    onPress={() => {
-                      setPeriod(option);
-                      setShowPeriodSheet(false);
-                    }}
-                    style={[styles.sheetOption, active && styles.sheetOptionActive]}>
-                    <Text style={[styles.sheetOptionText, active && styles.sheetOptionTextActive]}>{PERIOD_LABELS[option]}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -480,34 +480,49 @@ const styles = StyleSheet.create({
     color: '#071a36',
     textAlign: 'center',
   },
-  periodTrigger: {
+  weekNav: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#fff',
+    marginBottom: 2,
+  },
+  weekBtn: {
+    width: 48,
+    height: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f5f8fa',
     borderWidth: 1,
     borderColor: '#e7eef2',
     borderRadius: 10,
-    paddingHorizontal: 14,
-    height: 64,
-    shadowColor: '#081a36',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 1,
   },
-  periodCopy: {
+  weekBtnDisabled: {
+    opacity: 0.4,
+  },
+  weekInfo: {
     flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    height: 52,
+    backgroundColor: '#f5f8fa',
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: '#e7eef2',
+  },
+  weekCopy: {
+    alignItems: 'center',
     gap: 2,
   },
-  periodLabel: {
-    fontSize: 16,
+  weekLabel: {
+    fontSize: 14,
     fontWeight: '900',
     color: '#071a36',
   },
-  periodRange: {
-    fontSize: 12,
+  weekRange: {
+    fontSize: 11,
     color: '#667f90',
+    fontWeight: '700',
   },
   totalBlock: {
     backgroundColor: '#fff',
