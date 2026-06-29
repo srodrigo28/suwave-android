@@ -119,9 +119,10 @@ export default function FinanceScreen() {
             <Feather color="#071a36" name="chevron-left" size={22} />
           </Pressable>
           <View style={styles.weekInfo}>
-            <Feather color="#071a36" name="calendar" size={18} />
-            <View style={styles.weekCopy}>
+            <Feather color="#071a36" name="calendar" size={16} />
+            <View style={styles.weekTextRow}>
               <Text style={styles.weekLabel}>7 dias</Text>
+              <Text style={styles.weekDot}> · </Text>
               <Text style={styles.weekRange}>{rangeLabel}</Text>
             </View>
           </View>
@@ -500,24 +501,30 @@ const styles = StyleSheet.create({
   },
   weekInfo: {
     flex: 1,
-    flexDirection: 'row',
+    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
-    height: 52,
+    gap: 4,
+    height: 56,
     backgroundColor: '#f5f8fa',
     borderTopWidth: 1,
     borderBottomWidth: 1,
     borderColor: '#e7eef2',
+    paddingHorizontal: 6,
   },
-  weekCopy: {
+  weekTextRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
   },
   weekLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '900',
     color: '#071a36',
+  },
+  weekDot: {
+    fontSize: 12,
+    color: '#c0cdd5',
+    fontWeight: '700',
   },
   weekRange: {
     fontSize: 11,
