@@ -21,10 +21,11 @@ import {
   getWeekdayLabel,
 } from '@/utils/finance';
 
-/**
- * Equivalente nativo da tela `finance` (`FinanceScreen`) em
- * app/motorista/src/app/page.tsx:5264-5394.
- */
+function formatDistanceMeters(meters: number): string {
+  if (meters === 0) return '0 km';
+  return `${(meters / 1000).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km`;
+}
+
 export default function FinanceScreen() {
   const { token } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
@@ -34,6 +35,7 @@ export default function FinanceScreen() {
   const [customRange] = useState<{ start: string; end: string }>({ start: '', end: '' });
   const [showPeriodSheet, setShowPeriodSheet] = useState(false);
   const [selectedTrip, setSelectedTrip] = useState<DriverEarningsHistory | null>(null);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   const range = useMemo(() => getPeriodRange(period, customRange), [period, customRange]);
   const rangeLabel = formatPeriodRangeLabel(range.start, range.end);
@@ -41,12 +43,36 @@ export default function FinanceScreen() {
   const dailyBreakdown = earnings?.daily_breakdown ?? [];
   const periodHistory = earnings?.period_history ?? [];
 
+  const displayedHistory = selectedDate
+    ? periodHistory.filter((item) => item.created_at.startsWith(selectedDate))
+    : periodHistory;
+
+  const selectedDayBreakdown = selectedDate
+    ? dailyBreakdown.find((d) => d.date === selectedDate) ?? null
+    : null;
+
+  const displayedTripCount = selectedDayBreakdown != null
+    ? (selectedDayBreakdown.trip_count ?? displayedHistory.length)
+    : (earnings?.viagens_count ?? 0);
+
+  const displayedOnlineSeconds = selectedDayBreakdown != null
+    ? (selectedDayBreakdown.online_seconds ?? 0)
+    : (earnings?.online_seconds ?? 0);
+
+  const displayedDistanceMeters: number | null = selectedDayBreakdown != null
+    ? (selectedDayBreakdown.distance_meters_total ?? 0)
+    : null;
+
+  const displayedPoints = selectedDate
+    ? displayedHistory.length * 10
+    : (earnings?.points_score ?? 0);
+
   const loadFinance = useCallback(() => {
     if (!token) return;
     setIsLoading(true);
     setError('');
     getDriverEarnings(token, { start: range.start, end: range.end })
-      .then(setEarnings)
+      .then((data) => { setEarnings(data); setSelectedDate(null); })
       .catch((err) => setError(err instanceof Error ? err.message : 'Não foi possível carregar ganhos.'))
       .finally(() => setIsLoading(false));
   }, [token, range.start, range.end]);
@@ -81,19 +107,40 @@ export default function FinanceScreen() {
         </Pressable>
 
         <View style={styles.totalBlock}>
-          <Text style={styles.totalLabel}>Ganhos no período</Text>
-          <Text style={styles.totalValue}>{earnings ? `R$ ${(earnings.period_total_cents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'R$ 0,00'}</Text>
+          <View style={styles.totalMeta}>
+            <Text style={styles.totalLabel}>
+              {selectedDate ? getWeekdayLabel(selectedDate) : 'Ganhos no período'}
+            </Text>
+            {selectedDate ? (
+              <Pressable
+                accessibilityLabel="Ver todos os dias"
+                onPress={() => setSelectedDate(null)}
+                style={styles.clearBtn}
+              >
+                <Feather color="#fff" name="x" size={10} />
+                <Text style={styles.clearBtnText}>Ver todos</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          <Text style={styles.totalValue}>
+            {selectedDate
+              ? (selectedDayBreakdown?.amount ?? 'R$ 0,00')
+              : (earnings?.period_total ?? 'R$ 0,00')}
+          </Text>
         </View>
 
         <View style={styles.chart}>
           {chartDays.map((day, index) => {
             const heightPercent = Math.max(4, Math.round((day.amount_cents / maxCents) * 100));
+            const isSelected = selectedDate === day.date;
             return (
               <AnimatedBar
                 heightPercent={heightPercent}
                 index={index}
                 key={day.date}
                 label={getWeekdayLabel(day.date)}
+                selected={isSelected}
+                onPress={() => setSelectedDate(isSelected ? null : day.date)}
               />
             );
           })}
@@ -102,19 +149,27 @@ export default function FinanceScreen() {
         <View style={styles.stats}>
           <View style={styles.statCard}>
             <Feather color="#071a36" name="clock" size={20} />
-            <Text style={styles.statValue}>{formatOnlineDuration(earnings?.online_seconds ?? 0)}</Text>
+            <Text style={styles.statValue}>{formatOnlineDuration(displayedOnlineSeconds)}</Text>
             <Text style={styles.statLabel}>Online</Text>
           </View>
           <View style={styles.statCard}>
             <Feather color="#071a36" name="map" size={20} />
-            <Text style={styles.statValue}>{earnings?.viagens_count ?? 0}</Text>
+            <Text style={styles.statValue}>{displayedTripCount}</Text>
             <Text style={styles.statLabel}>Viagens</Text>
           </View>
-          <View style={styles.statCard}>
-            <Feather color="#071a36" name="zap" size={20} />
-            <Text style={styles.statValue}>{earnings?.points_score ?? 0}</Text>
-            <Text style={styles.statLabel}>Pontos</Text>
-          </View>
+          {displayedDistanceMeters != null ? (
+            <View style={styles.statCard}>
+              <Feather color="#071a36" name="navigation" size={20} />
+              <Text style={styles.statValue}>{formatDistanceMeters(displayedDistanceMeters)}</Text>
+              <Text style={styles.statLabel}>Km rodado</Text>
+            </View>
+          ) : (
+            <View style={styles.statCard}>
+              <Feather color="#071a36" name="zap" size={20} />
+              <Text style={styles.statValue}>{displayedPoints}</Text>
+              <Text style={styles.statLabel}>Pontos</Text>
+            </View>
+          )}
         </View>
 
         <FormToast message={error} />
@@ -130,7 +185,8 @@ export default function FinanceScreen() {
             ))}
           </View>
         ) : null}
-        {!isLoading && periodHistory.length === 0 ? (
+
+        {!isLoading && displayedHistory.length === 0 && !selectedDate ? (
           <View style={styles.emptyState}>
             <Feather color="#9db4bd" name="dollar-sign" size={40} />
             <Text style={styles.emptyStateTitle}>Sem movimentações</Text>
@@ -138,28 +194,21 @@ export default function FinanceScreen() {
           </View>
         ) : null}
 
-        {!isLoading && periodHistory.length > 0 ? (
+        {!isLoading && displayedHistory.length === 0 && selectedDate ? (
+          <View style={styles.emptyState}>
+            <Feather color="#9db4bd" name="dollar-sign" size={40} />
+            <Text style={styles.emptyStateTitle}>Sem viagens</Text>
+            <Text style={styles.emptyStateText}>Nenhuma viagem em {getWeekdayLabel(selectedDate)}.</Text>
+          </View>
+        ) : null}
+
+        {!isLoading && displayedHistory.length > 0 ? (
           <View style={styles.historyList}>
-            <Text style={styles.historyTitle}>Histórico do período</Text>
-            {periodHistory.map((item) => (
-              <Pressable key={item.id} onPress={() => setSelectedTrip(item)} style={styles.historyItem}>
-                <View style={styles.historyItemIcon}>
-                  <Feather
-                    color="#fff"
-                    name={item.type === 'delivery' ? 'package' : item.type === 'planned_trip' ? 'map' : 'navigation'}
-                    size={14}
-                  />
-                </View>
-                <View style={styles.historyItemCopy}>
-                  <Text style={styles.historyItemTitle}>{item.title}</Text>
-                  {item.origin_label ? <Text style={styles.historyItemSub}>{item.origin_label}</Text> : null}
-                  {item.distance_label ? <Text style={styles.historyItemMeta}>{item.distance_label}{item.duration_label ? ` · ${item.duration_label}` : ''}</Text> : null}
-                </View>
-                <View style={styles.historyItemRight}>
-                  <Text style={styles.historyItemAmount}>{item.amount}</Text>
-                  <Feather color="#9aabb8" name="chevron-right" size={16} />
-                </View>
-              </Pressable>
+            <Text style={styles.historyTitle}>
+              {selectedDate ? getWeekdayLabel(selectedDate) : 'Histórico do período'}
+            </Text>
+            {displayedHistory.map((item) => (
+              <FinanceHistoryCard key={`${item.type}-${item.id}`} item={item} onPress={() => setSelectedTrip(item)} />
             ))}
           </View>
         ) : null}
@@ -201,7 +250,58 @@ export default function FinanceScreen() {
   );
 }
 
-function AnimatedBar({ heightPercent, index, label }: { heightPercent: number; index: number; label: string }) {
+const STATUS_MAP: Record<string, { label: string; color: string; bg: string }> = {
+  CONCLUIDA:  { label: 'Concluída',  color: '#0a6b4f', bg: '#e6f7f0' },
+  delivered:  { label: 'Entregue',   color: '#0a6b4f', bg: '#e6f7f0' },
+  RECUSADA:   { label: 'Cancelada',  color: '#b91c1c', bg: '#fdecea' },
+  ACEITA:     { label: 'Aceita',     color: '#2f6fed', bg: '#e8f0fe' },
+};
+
+function FinanceHistoryCard({ item, onPress }: { item: DriverEarningsHistory; onPress: () => void }) {
+  const statusInfo = STATUS_MAP[item.status] ?? { label: item.status, color: '#667f90', bg: '#f1f5f7' };
+  const isCancelled = item.status === 'RECUSADA';
+
+  return (
+    <Pressable onPress={onPress} style={styles.historyItem}>
+      <View style={[styles.historyItemIcon, { backgroundColor: statusInfo.bg }]}>
+        <Feather
+          color={statusInfo.color}
+          name={item.type === 'delivery' ? 'package' : item.type === 'planned_trip' ? 'map' : 'navigation'}
+          size={14}
+        />
+      </View>
+      <View style={styles.historyItemCopy}>
+        <Text style={styles.historyItemTitle}>{item.title}</Text>
+        {item.type === 'delivery'
+          ? (item.description ? <Text style={styles.historyItemSub}>{item.description}</Text> : null)
+          : (item.description ? <Text style={styles.historyItemSub}>{item.description}</Text> : null)}
+        <Text style={styles.historyItemMeta}>{new Date(item.created_at).toLocaleDateString('pt-BR')}</Text>
+      </View>
+      <View style={styles.historyItemRight}>
+        <Text style={[styles.historyItemAmount, isCancelled && { color: '#b91c1c' }]}>
+          {item.amount_cents > 0 ? item.amount : 'R$ 0,00'}
+        </Text>
+        <View style={[styles.statusBadge, { backgroundColor: statusInfo.bg }]}>
+          <Text style={[styles.statusBadgeText, { color: statusInfo.color }]}>{statusInfo.label}</Text>
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+function AnimatedBar({
+  heightPercent,
+  index,
+  label,
+  selected,
+  onPress,
+}: {
+  heightPercent: number;
+  index: number;
+  label: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
   const height = useSharedValue(0);
 
   useEffect(() => {
@@ -211,12 +311,12 @@ function AnimatedBar({ heightPercent, index, label }: { heightPercent: number; i
   const fillStyle = useAnimatedStyle(() => ({ height: `${height.value}%` as `${number}%` }));
 
   return (
-    <View style={styles.chartBar}>
-      <View style={styles.chartBarTrack}>
-        <Animated.View style={[styles.chartBarFill, fillStyle]} />
+    <Pressable onPress={onPress} style={styles.chartBar}>
+      <View style={[styles.chartBarTrack, selected && styles.chartBarTrackSelected]}>
+        <Animated.View style={[styles.chartBarFill, fillStyle, selected && styles.chartBarFillSelected]} />
       </View>
-      <Text style={styles.chartBarLabel}>{label}</Text>
-    </View>
+      <Text style={[styles.chartBarLabel, selected && styles.chartBarLabelSelected]}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -416,12 +516,17 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingVertical: 18,
     paddingHorizontal: 16,
-    gap: 4,
+    gap: 6,
     shadowColor: '#081a36',
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.06,
     shadowRadius: 14,
     elevation: 1,
+  },
+  totalMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   totalLabel: {
     fontSize: 12,
@@ -429,10 +534,25 @@ const styles = StyleSheet.create({
     color: '#9aabb8',
     textTransform: 'uppercase',
   },
+  clearBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#dc2626',
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  clearBtnText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
   totalValue: {
     fontSize: 32,
     fontWeight: '900',
-    color: '#071a36',
+    color: '#0a6b4f',
   },
   chart: {
     flexDirection: 'row',
@@ -461,15 +581,25 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     overflow: 'hidden',
   },
+  chartBarTrackSelected: {
+    backgroundColor: '#c8d8e4',
+  },
   chartBarFill: {
     width: '100%',
     borderRadius: 7,
     backgroundColor: SuwaveColors.yellow,
   },
+  chartBarFillSelected: {
+    backgroundColor: '#071a36',
+  },
   chartBarLabel: {
     fontSize: 10,
     fontWeight: '800',
     color: '#9aabb8',
+  },
+  chartBarLabelSelected: {
+    color: '#071a36',
+    fontWeight: '900',
   },
   stats: {
     flexDirection: 'row',
@@ -523,6 +653,76 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     color: '#667f90',
     textAlign: 'center',
+  },
+  historyList: {
+    gap: 8,
+  },
+  historyTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#071a36',
+    marginBottom: 4,
+  },
+  historyItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e7eef2',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    shadowColor: '#081a36',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 1,
+  },
+  historyItemIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  historyItemCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  historyItemTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#071a36',
+  },
+  historyItemSub: {
+    fontSize: 12,
+    color: '#667f90',
+  },
+  historyItemMeta: {
+    fontSize: 11,
+    color: '#9aabb8',
+    fontWeight: '700',
+  },
+  historyItemRight: {
+    alignItems: 'flex-end',
+    gap: 4,
+    flexShrink: 0,
+  },
+  historyItemAmount: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#0a6b4f',
+  },
+  statusBadge: {
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '900',
   },
   sheetOverlay: {
     flex: 1,
@@ -578,68 +778,6 @@ const styles = StyleSheet.create({
   },
   sheetOptionTextActive: {
     color: SuwaveColors.black,
-  },
-  historyList: {
-    gap: 8,
-  },
-  historyTitle: {
-    fontSize: 18,
-    fontWeight: '900',
-    color: '#071a36',
-    marginBottom: 4,
-  },
-  historyItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#e7eef2',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    shadowColor: '#081a36',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    elevation: 1,
-  },
-  historyItemIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: SuwaveColors.yellow,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  historyItemCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  historyItemTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#071a36',
-  },
-  historyItemSub: {
-    fontSize: 12,
-    color: '#667f90',
-  },
-  historyItemMeta: {
-    fontSize: 11,
-    color: '#9aabb8',
-    fontWeight: '700',
-  },
-  historyItemRight: {
-    alignItems: 'flex-end',
-    gap: 4,
-    flexShrink: 0,
-  },
-  historyItemAmount: {
-    fontSize: 15,
-    fontWeight: '900',
-    color: '#071a36',
   },
   detailOverlay: {
     flex: 1,

@@ -1,3 +1,5 @@
+import { Platform } from 'react-native';
+
 import type { DeliveryStatus, DriverStatus, RideStatus, TripStatus, VehicleStatus } from '@/types/enums';
 
 /**
@@ -20,11 +22,18 @@ import type { DeliveryStatus, DriverStatus, RideStatus, TripStatus, VehicleStatu
  */
 
 function getApiBaseUrl() {
+  const shouldUseAndroidProxy = Platform.OS === 'android' && process.env.EXPO_PUBLIC_USE_ANDROID_PROXY === '1';
+  const emulatorProxyBaseUrl = process.env.EXPO_PUBLIC_ANDROID_PROXY_API_BASE_URL?.replace(/\/$/, '');
+  if (shouldUseAndroidProxy && emulatorProxyBaseUrl) {
+    return emulatorProxyBaseUrl.endsWith('/api/v1') ? emulatorProxyBaseUrl : `${emulatorProxyBaseUrl}/api/v1`;
+  }
+
   const baseUrl = (process.env.EXPO_PUBLIC_API_BASE_URL || 'https://99dev.pro/suwave-api').replace(/\/$/, '');
   return baseUrl.endsWith('/api/v1') ? baseUrl : `${baseUrl}/api/v1`;
 }
 
 const apiBaseUrl = getApiBaseUrl();
+const DRIVER_API_DEBUG_PREFIX = '[motorista-api]';
 
 const authExpiredListeners = new Set<() => void>();
 
@@ -374,6 +383,9 @@ export type DriverEarningsDailyBreakdown = {
   date: string;
   amount: string;
   amount_cents: number;
+  trip_count?: number;
+  online_seconds?: number;
+  distance_meters_total?: number;
 };
 
 export type DriverEarnings = {
@@ -492,6 +504,11 @@ export function reportClientError(payload: { message: string; code?: string; pat
 async function parseResponse<T>(response: Response, options: { authRequired?: boolean } = {}) {
   const authRequired = options.authRequired ?? true;
   const body = (await response.json().catch(() => ({}))) as Partial<ApiEnvelope<T>> & Record<string, unknown>;
+  console.info(`${DRIVER_API_DEBUG_PREFIX} parseResponse`, {
+    ok: response.ok,
+    status: response.status,
+    url: response.url,
+  });
 
   if (!response.ok) {
     if (authRequired && response.status === 401) {
@@ -515,13 +532,38 @@ async function parseResponse<T>(response: Response, options: { authRequired?: bo
 
 async function apiRequest(path: string, init?: RequestInit, timeoutMs = 30000) {
   const requestId = generateRequestId();
+  const url = `${apiBaseUrl}${path}`;
+  console.info(`${DRIVER_API_DEBUG_PREFIX} request:start`, {
+    path,
+    method: init?.method ?? 'GET',
+    requestId,
+    timeoutMs,
+    url,
+  });
   try {
-    return await fetch(`${apiBaseUrl}${path}`, {
+    const response = await fetch(url, {
       ...init,
       headers: { 'X-Client-App': 'motorista', 'X-Request-ID': requestId, ...(init?.headers ?? {}) },
       signal: timeoutSignal(timeoutMs),
     });
+    console.info(`${DRIVER_API_DEBUG_PREFIX} request:response`, {
+      path,
+      method: init?.method ?? 'GET',
+      requestId,
+      status: response.status,
+      ok: response.ok,
+      finalUrl: response.url,
+    });
+    return response;
   } catch (err) {
+    console.error(`${DRIVER_API_DEBUG_PREFIX} request:error`, {
+      path,
+      method: init?.method ?? 'GET',
+      requestId,
+      timeoutMs,
+      error: err instanceof Error ? err.message : String(err),
+      name: err instanceof Error ? err.name : 'unknown',
+    });
     const message =
       err instanceof Error && err.name === 'AbortError'
         ? 'A API demorou muito para responder. Verifique sua conexão.'
@@ -1129,7 +1171,34 @@ export async function listDriverNotifications(token: string) {
     headers: { Authorization: `Bearer ${token}` },
   });
 
-  return parseResponse<DriverNotification[]>(response);
+  const body = (await response.json().catch(() => ({}))) as
+    | Partial<ApiEnvelope<DriverNotification[]>>
+    | Record<string, unknown>;
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      emitDriverAuthExpired();
+      throw new DriverApiError('Sua sessão expirou. Entre novamente para continuar.', 'token_expired');
+    }
+
+    const error = apiError(body as Record<string, unknown>);
+    reportClientError({
+      code: error.code,
+      context: { fields: error.fields ?? null },
+      message: error.message,
+      path: new URL(response.url).pathname,
+      statusCode: response.status,
+    });
+    throw error;
+  }
+
+  const rawList =
+    Array.isArray((body as { data?: unknown }).data) ? (body as { data: unknown[] }).data
+      : Array.isArray((body as { notifications?: unknown }).notifications) ? (body as { notifications: unknown[] }).notifications
+      : Array.isArray(body) ? body
+      : [];
+
+  return rawList as DriverNotification[];
 }
 
 export async function createDriverTrip(token: string, input: CreateDriverTripInput) {
