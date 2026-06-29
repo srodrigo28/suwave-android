@@ -17,8 +17,10 @@ import { snapDriverLocationToRoad } from '@/services/maps-client';
 import {
   declineDriverRideRequest,
   DriverDelivery,
+  DriverEarnings,
   DriverProfile,
   DriverRideRequest,
+  getDriverEarnings,
   getDriverProfile,
   listAvailableDriverDeliveries,
   listDriverRideRequests,
@@ -27,6 +29,7 @@ import {
   setDriverOffline,
   setDriverOnline,
 } from '@/services/driver-client';
+import { toISODate } from '@/utils/finance';
 import { useDriverFlowStore } from '@/stores/driver-flow-store';
 import { isVehicleApproved } from '@/utils/vehicles';
 
@@ -58,6 +61,9 @@ export default function DashboardScreen() {
   const [currentLocation, setCurrentLocation] = useState<Location.LocationObject | null>(null);
   const [displayCoords, setDisplayCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [locationLabel, setLocationLabel] = useState('Localizando...');
+  const [todayEarnings, setTodayEarnings] = useState<DriverEarnings | null>(null);
+  const todayRideCount = todayEarnings?.viagens_count ?? 0;
+  const todayTotal = todayEarnings?.period_total ?? 'R$ 0,00';
   const mapRef = useRef<MapView | null>(null);
   const seenRideIdsRef = useRef<Set<string>>(new Set());
   const seenDeliveryIdsRef = useRef<Set<string>>(new Set());
@@ -139,6 +145,20 @@ export default function DashboardScreen() {
     });
 
     return () => { cancelled = true; };
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    function loadToday() {
+      const today = toISODate(new Date());
+      getDriverEarnings(token!, { start: today, end: today })
+        .then((data) => { if (!cancelled) setTodayEarnings(data); })
+        .catch(() => { if (!cancelled) setTodayEarnings(null); });
+    }
+    loadToday();
+    const id = setInterval(loadToday, 60_000);
+    return () => { cancelled = true; clearInterval(id); };
   }, [token]);
 
   useEffect(() => {
@@ -536,6 +556,19 @@ export default function DashboardScreen() {
         ) : null}
       </MapView>
 
+      {/* Resumo diário flutuante */}
+      <View style={[styles.todaySummary, { top: insets.top + 10 }]}>
+        <View style={styles.todaySummaryItem}>
+          <Text style={styles.todaySummaryLabel}>Viagens{'\n'}hoje</Text>
+          <Text style={styles.todaySummaryValue}>{todayRideCount}</Text>
+        </View>
+        <View style={styles.todaySummaryDivider} />
+        <View style={styles.todaySummaryItem}>
+          <Text style={styles.todaySummaryLabel}>Total do dia</Text>
+          <Text style={styles.todaySummaryValue}>{todayTotal}</Text>
+        </View>
+      </View>
+
       <View style={[styles.mapControls, { top: insets.top + 10 }]}>
         <Pressable
           accessibilityLabel="Aproximar mapa"
@@ -775,6 +808,46 @@ const styles = StyleSheet.create({
   },
   map: {
     flex: 1,
+  },
+  todaySummary: {
+    position: 'absolute',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fffde6',
+    borderWidth: 1.5,
+    borderColor: '#fdd835',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    gap: 12,
+    zIndex: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  todaySummaryItem: {
+    alignItems: 'center',
+    gap: 2,
+  },
+  todaySummaryLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#444',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+  },
+  todaySummaryValue: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#071a36',
+  },
+  todaySummaryDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: '#e0d68a',
   },
   mapControls: {
     position: 'absolute',
