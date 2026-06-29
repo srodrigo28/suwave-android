@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Location from 'expo-location';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from '@/components/motorista/native-map';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -99,10 +99,10 @@ function getLookAheadPoint(route: MapCoordinate[], startIndex: number, lookAhead
 
 const MIN_ARRIVAL_RADIUS_METERS = 150;
 const MAX_ARRIVAL_RADIUS_METERS = 300;
-const NAVIGATION_LOOK_AHEAD_METERS = 180;
+const NAVIGATION_LOOK_AHEAD_METERS = 200;
 const NAVIGATION_CAMERA_PITCH = 0;
-const NAVIGATION_CAMERA_ZOOM = 17.8;
-const NAVIGATION_CAMERA_DURATION_MS = 850;
+const NAVIGATION_CAMERA_ZOOM = 18.2;
+const NAVIGATION_CAMERA_DURATION_MS = 750;
 
 export default function RideActiveScreen() {
   const { height: windowHeight } = useWindowDimensions();
@@ -129,6 +129,9 @@ export default function RideActiveScreen() {
   const [isNavigationExpanded, setIsNavigationExpanded] = useState(false);
   const [deliveryCodeInput, setDeliveryCodeInput] = useState('');
   const [deliveryCodeError, setDeliveryCodeError] = useState('');
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelReasonError, setCancelReasonError] = useState('');
   const lastPingRef = useRef(0);
   const lastRouteOriginRef = useRef<MapCoordinate | null>(null);
   const lastRouteTargetRef = useRef<MapCoordinate | null>(null);
@@ -721,39 +724,33 @@ export default function RideActiveScreen() {
   }
 
   async function cancelActiveRide() {
+    if (!cancelReason.trim()) {
+      setCancelReasonError('Informe o motivo do cancelamento.');
+      return;
+    }
     if (!token || !ride) {
       setActiveRide(null);
       router.replace('/dashboard');
       return;
     }
     setIsBusy(true);
-    setMessage('');
+    setCancelReasonError('');
     try {
-      await cancelDriverRideRequest(token, ride.id);
+      await cancelDriverRideRequest(token, ride.id, cancelReason.trim());
       setActiveRide(null);
       router.replace('/dashboard');
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : `Não foi possível cancelar ${isDelivery ? 'o envio' : 'a corrida'}.`);
+      setCancelReasonError(err instanceof Error ? err.message : `Não foi possível cancelar ${isDelivery ? 'o envio' : 'a corrida'}.`);
     } finally {
       setIsBusy(false);
+      setShowCancelModal(false);
     }
   }
 
   function handleCancel() {
-    Alert.alert(
-      isDelivery ? 'Cancelar envio?' : 'Cancelar corrida?',
-      isDelivery
-        ? 'O envio será cancelado, o cliente será reembolsado quando houver valor reservado e você ficará offline.'
-        : 'A corrida será cancelada, o passageiro será reembolsado quando houver valor reservado e você ficará offline.',
-      [
-        { text: 'Voltar', style: 'cancel' },
-        {
-          text: isDelivery ? 'Cancelar envio' : 'Cancelar corrida',
-          style: 'destructive',
-          onPress: () => void cancelActiveRide(),
-        },
-      ],
-    );
+    setCancelReason('');
+    setCancelReasonError('');
+    setShowCancelModal(true);
   }
 
   const phaseLabel = isInProgress
@@ -848,6 +845,11 @@ export default function RideActiveScreen() {
               <Text numberOfLines={isNavigationExpanded ? 2 : 1} style={styles.navigationInstruction}>
                 {activeStep.step.instruction}
               </Text>
+              {(distanceLabel ?? eta) ? (
+                <Text numberOfLines={1} style={styles.navigationRemaining}>
+                  {[distanceLabel && `${distanceLabel} restantes`, eta].filter(Boolean).join(' · ')}
+                </Text>
+              ) : null}
               {isNavigationExpanded ? (
                 <View style={styles.navigationMetaRow}>
                   <Text numberOfLines={1} style={styles.navigationStreet}>
@@ -1123,9 +1125,155 @@ export default function RideActiveScreen() {
           </View>
         </View>
       </View>
+      {/* Modal de cancelamento com motivo obrigatório */}
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setShowCancelModal(false)}
+        transparent
+        visible={showCancelModal}
+      >
+        <Pressable onPress={() => setShowCancelModal(false)} style={cancelStyles.overlay}>
+          <Pressable style={cancelStyles.sheet}>
+            <View style={cancelStyles.handle} />
+            <Text style={cancelStyles.title}>
+              {isDelivery ? 'Cancelar envio' : 'Cancelar corrida'}
+            </Text>
+            <Text style={cancelStyles.subtitle}>
+              {isDelivery
+                ? 'O cliente será reembolsado. Informe o motivo obrigatoriamente.'
+                : 'O passageiro será notificado. Informe o motivo obrigatoriamente.'}
+            </Text>
+            <TextInput
+              maxLength={280}
+              multiline
+              numberOfLines={4}
+              onChangeText={(text) => {
+                setCancelReason(text);
+                setCancelReasonError('');
+              }}
+              placeholder="Descreva o motivo do cancelamento..."
+              placeholderTextColor="#9aabb8"
+              style={cancelStyles.input}
+              value={cancelReason}
+            />
+            <Text style={cancelStyles.counter}>{cancelReason.length}/280</Text>
+            {cancelReasonError ? (
+              <Text style={cancelStyles.error}>{cancelReasonError}</Text>
+            ) : null}
+            <View style={cancelStyles.actions}>
+              <Pressable
+                onPress={() => setShowCancelModal(false)}
+                style={cancelStyles.btnSecondary}
+              >
+                <Text style={cancelStyles.btnSecondaryText}>Voltar</Text>
+              </Pressable>
+              <Pressable
+                disabled={isBusy || !cancelReason.trim()}
+                onPress={() => void cancelActiveRide()}
+                style={[cancelStyles.btnDanger, (!cancelReason.trim() || isBusy) && cancelStyles.btnDisabled]}
+              >
+                <Text style={cancelStyles.btnDangerText}>
+                  {isBusy ? 'Cancelando...' : 'Confirmar'}
+                </Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
+
+const cancelStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(5, 24, 36, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 32,
+    gap: 12,
+  },
+  handle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#dce6ec',
+    alignSelf: 'center',
+    marginBottom: 4,
+  },
+  title: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#071a36',
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#667f90',
+    lineHeight: 20,
+  },
+  input: {
+    borderWidth: 1.5,
+    borderColor: '#e0eaf0',
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 14,
+    color: '#071a36',
+    minHeight: 100,
+    textAlignVertical: 'top',
+  },
+  counter: {
+    fontSize: 11,
+    color: '#9aabb8',
+    textAlign: 'right',
+    marginTop: -6,
+  },
+  error: {
+    color: '#dc2626',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  actions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  btnSecondary: {
+    flex: 1,
+    height: 50,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#e0eaf0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  btnSecondaryText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#071a36',
+  },
+  btnDanger: {
+    flex: 1,
+    height: 50,
+    borderRadius: 10,
+    backgroundColor: '#dc2626',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  btnDangerText: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#fff',
+  },
+  btnDisabled: {
+    opacity: 0.45,
+  },
+});
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#edf4f4' },
@@ -1204,6 +1352,7 @@ const styles = StyleSheet.create({
   navigationCopy: { flex: 1 },
   navigationDistance: { color: '#ffc61a', fontSize: 12, fontWeight: '900', marginBottom: 2 },
   navigationInstruction: { color: '#fff', fontSize: 16, fontWeight: '900', lineHeight: 20 },
+  navigationRemaining: { color: 'rgba(255,255,255,0.55)', fontSize: 11, fontWeight: '700', marginTop: 3 },
   navigationMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',

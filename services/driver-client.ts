@@ -1025,13 +1025,12 @@ export async function trackDriverRideRequest(rideRequestId: string) {
   }>(response);
 }
 
-export async function cancelDriverRideRequest(token: string, rideRequestId: string) {
+export async function cancelDriverRideRequest(token: string, rideRequestId: string, reason: string) {
   const response = await apiRequest(`/driver/ride-requests/${rideRequestId}/cancel`, {
     body: JSON.stringify({
       cancel_scope: 'driver_active_ride',
-      details: '',
       keep_online: false,
-      reason: 'driver_cancelled',
+      reason,
       refund_destination: 'wallet',
       refund_to_wallet: true,
     }),
