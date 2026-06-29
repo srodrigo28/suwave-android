@@ -119,12 +119,10 @@ export default function FinanceScreen() {
             <Feather color="#071a36" name="chevron-left" size={22} />
           </Pressable>
           <View style={styles.weekInfo}>
-            <Feather color="#071a36" name="calendar" size={16} />
-            <View style={styles.weekTextRow}>
-              <Text style={styles.weekLabel}>7 dias</Text>
-              <Text style={styles.weekDot}> · </Text>
-              <Text style={styles.weekRange}>{rangeLabel}</Text>
-            </View>
+            <Feather color="#071a36" name="calendar" size={14} />
+            <Text style={styles.weekLabel}>7 dias</Text>
+            <Text style={styles.weekDot}>·</Text>
+            <Text style={styles.weekRange}>{rangeLabel}</Text>
           </View>
           <Pressable
             accessibilityLabel="Próxima semana"
@@ -500,21 +498,17 @@ const styles = StyleSheet.create({
     opacity: 0.4,
   },
   weekInfo: {
-    flex: 1,
-    flexDirection: 'column',
+    flexGrow: 1,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    height: 56,
+    gap: 5,
+    paddingVertical: 14,
+    paddingHorizontal: 8,
     backgroundColor: '#f5f8fa',
     borderTopWidth: 1,
     borderBottomWidth: 1,
     borderColor: '#e7eef2',
-    paddingHorizontal: 6,
-  },
-  weekTextRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
   },
   weekLabel: {
     fontSize: 13,
